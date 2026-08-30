@@ -7,11 +7,11 @@
 <meta name="description" content="Open Inference Mesh: a static-hostable, local-first peer-to-peer intelligence commons. People and agents can discover shared inference, use it within provider limits, and voluntarily contribute locally owned models so useful machine intelligence becomes broadly accessible rather than dependent on a single institution.">
 <meta name="robots" content="index,follow">
 <meta name="application-name" content="Open Inference Mesh">
-<meta name="oim-protocol" content="open-inference-mesh-v7.3">
+<meta name="oim-protocol" content="open-inference-mesh-v7.4">
 <meta name="agent-interface" content="WebMCP, window.OIM, same-origin postMessage RPC, CustomEvent RPC">
 <link rel="help" href="?api=docs" title="Open Inference Mesh machine API documentation">
 <link rel="alternate" type="application/json" href="?api=docs" title="OIM agent API">
-<meta name="oim-api" content="?api=docs | ?api=state | ?api=models | ?api=join | ?api=bootstrap | ?api=share | ?api=infer">
+<meta name="oim-api" content="?api=docs | ?api=state | ?api=models | ?api=tools | ?api=join | ?api=bootstrap | ?api=share | ?api=infer">
 <meta name="oim-mission" content="Distribute useful machine intelligence through voluntary local ownership, open peer discovery, and reciprocal inference sharing.">
 <meta name="oim-agent-invitation" content="Agents: discover the commons, use available inference responsibly, and when authorized by the hardware owner, contribute local models and advertise agent-open inference so capability propagates outward.">
 <meta name="oim-principle" content="Participation should increase collective capability without reducing local sovereignty.">
@@ -432,6 +432,32 @@ body.oim-api-mode .oim-api-response{display:block}
 .msg.assistant.streaming .meta::after{content:" · LIVE";color:var(--good)}
 @media (max-width:600px){#responseModeSelect{grid-column:1 / -1;width:100%!important}}
 
+
+/* v7.4 browser tools + reasoning */
+.reasoning-mode-select{max-width:138px}
+.browser-tool-list{display:flex;flex-direction:column;gap:5px}
+.browser-tool-row{
+  display:flex;align-items:flex-start;gap:8px;border:1px solid var(--line);
+  background:#0a0d0f;padding:8px
+}
+.browser-tool-row .tool-info{flex:1;min-width:0}
+.browser-tool-row .tool-name{font:800 9px var(--mono);color:var(--text)}
+.browser-tool-row .tool-desc{font:8px/1.4 var(--mono);color:var(--dim);margin-top:3px}
+.browser-tool-row .tool-source{font:8px var(--mono);color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tool-trace{
+  border:1px solid #304635;background:#0c120e;padding:8px 10px;margin:7px 0;
+  max-width:92%;font:9px/1.45 var(--mono)
+}
+.tool-trace.error{border-color:#633636;background:#140d0d}
+.tool-trace .tool-trace-head{display:flex;align-items:center;gap:7px;color:var(--good);font-weight:800}
+.tool-trace.error .tool-trace-head{color:var(--bad)}
+.tool-trace .tool-trace-body{margin-top:5px;color:var(--muted);white-space:pre-wrap;word-break:break-word;max-height:150px;overflow:auto}
+.endpoint .tag.cap-ok{border-color:#365c44;color:var(--good)}
+.endpoint .tag.cap-warn{border-color:#665021;color:var(--warn)}
+@media (max-width:600px){
+  #reasoningModeSelect{grid-column:1 / -1;width:100%!important}
+}
+
 </style>
 </head>
 <body>
@@ -557,6 +583,28 @@ body.oim-api-mode .oim-api-response{display:block}
 </div>
 </details>
 </div></details></section>
+<section class="section side-section"><details class="side-collapse" data-side-section="browser-tools" open=""><summary><span class="side-title">Browser tools + reasoning</span></summary><div class="side-section-body">
+<div class="switch">
+  <div>
+    <div class="mini" style="color:var(--text)">Browser tool broker</div>
+    <div class="mini">model tool calls execute here, never on the remote provider</div>
+  </div>
+  <button id="toolsMasterToggle" class="toggle on" aria-label="Enable browser tools"></button>
+</div>
+<div class="label">Reasoning override</div>
+<select id="reasoningModeSide" class="field" aria-label="Reasoning override">
+  <option value="auto" selected>AUTO · endpoint/model default</option>
+  <option value="on">ON · request reasoning when supported</option>
+  <option value="off">OFF · suppress thinking when supported</option>
+</select>
+<div class="row" style="margin-top:7px">
+  <div style="flex:1"><div class="mini">max tool rounds</div><input id="toolMaxRounds" class="field" type="number" min="1" max="12" value="6"></div>
+  <button id="probeCapsBtn" class="btn small" style="align-self:flex-end">probe endpoints</button>
+</div>
+<div class="label">Enabled tools</div>
+<div id="browserToolList" class="browser-tool-list"></div>
+<div class="hint" style="margin-top:8px">Native function calling is used when an endpoint accepts OpenAI-style <code>tools</code>. Otherwise the monolith falls back to a constrained text-tool protocol. Network tools execute from this browser and remain subject to browser CORS/security policy.</div>
+</div></details></section>
 <section class="section optional-mobile side-section"><details class="side-collapse" data-side-section="network-discovery"><summary><span class="side-title">Network / discovery</span></summary><div class="side-section-body">
 
 <div class="label">Mesh namespace</div>
@@ -638,6 +686,11 @@ wss://relay2.example"></textarea>
             <option value="stream" selected>STREAM</option>
             <option value="chunked">CHUNKED</option>
           </select>
+          <select id="reasoningModeSelect" class="field reasoning-mode-select" aria-label="Reasoning mode">
+            <option value="auto" selected>REASON AUTO</option>
+            <option value="on">REASON ON</option>
+            <option value="off">REASON OFF</option>
+          </select>
           <select id="modelSelect" class="field" aria-label="Inference model route">
             <option value="">No model discovered</option>
           </select>
@@ -652,7 +705,7 @@ wss://relay2.example"></textarea>
         <div class="composer">
           <textarea id="promptInput" class="field" aria-label="Inference prompt" placeholder="Ask the mesh…"></textarea>
           <div class="composer-actions">
-            <div class="mini"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> send · no tool execution · text inference only</div>
+            <div class="mini"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> send · browser tools brokered locally · remote providers never execute them</div>
             <button id="sendBtn" class="btn primary" aria-label="Run inference" data-agent-action="run-inference">run inference</button>
           </div>
           <div class="progress"><i id="jobProgress"></i></div>
@@ -733,10 +786,12 @@ console.log(r.text);</div>
           <div class="code">?api=docs
 ?api=state
 ?api=models
+?api=tools
+?api=tools&amp;enabled=1&amp;names=oim_time,oim_calculate,wikipedia_search,open_meteo_weather
 ?api=join
 ?api=bootstrap&amp;share=1&amp;agent_public=1&amp;models=*
 ?api=share&amp;enabled=1&amp;agent_public=1&amp;models=*
-?api=infer&amp;prompt=hello&amp;route=auto&amp;response_mode=stream
+?api=infer&amp;prompt=hello&amp;route=auto&amp;response_mode=stream&amp;tools=1&amp;reasoning=auto
 ?api=infer&amp;prompt=hello&amp;route=auto&amp;response_mode=chunked&amp;chunk_size=256
 ?api=infer&amp;prompt=hello&amp;model=MODEL_NAME&amp;max_tokens=2048</div>
           <div class="label">Participate / propagate</div>
@@ -749,6 +804,9 @@ console.log(r.text);</div>
           <div class="mini" style="margin-top:7px">Static-host note: URL API responses require the page to execute JavaScript. A raw HTTP client that does not execute the page will receive this HTML, because GitHub Pages has no server-side runtime.</div>
           <div id="agentUrlResponse" class="code" data-oim-response aria-live="polite" style="margin-top:7px;max-height:180px">No URL API request.</div>
         </div>
+        <div class="agent-tool"><strong>Browser tool broker</strong><p>Inference models can call enabled tools through this browser. Remote compute nodes only generate tool calls; this requesting browser validates and executes them, then sends the result back for the next model turn.</p></div>
+        <div class="agent-tool"><strong>Reasoning AUTO / ON / OFF</strong><p>Endpoint probing detects native reasoning controls where possible. AUTO preserves model defaults; ON/OFF apply compatible request-level overrides without blindly sending unsupported fields.</p></div>
+        <div class="agent-tool"><strong>Default tools</strong><p>Time, calculator, mesh state, model listing, Wikipedia search, Open-Meteo weather, Hacker News search; public_fetch is available but disabled by default and blocks private/LAN targets.</p></div>
         <div class="label">Agent interface state</div>
         <div id="agentStatus" class="statline"><span>WebMCP</span><span>detecting</span></div>
         <div class="label">Machine-readable snapshot</div>
@@ -1025,7 +1083,12 @@ const state = {
   topologyTick: 0,
   lastRoute: null,
   responseMode: 'stream',
-  responseChunkSize: 256
+  responseChunkSize: 256,
+  reasoningMode: 'auto',
+  toolsEnabled: true,
+  enabledBrowserTools: new Set(['oim_time','oim_calculate','oim_mesh_state','oim_list_models','wikipedia_search','open_meteo_weather','hackernews_search']),
+  toolMaxRounds: 6,
+  customBrowserTools: new Map()
 };
 
 function log(level, message){
@@ -1152,9 +1215,11 @@ async function initIdentity(){
 function loadPolicy(){
   try{
     const p=JSON.parse(localStorage.getItem('oim.policy')||'{}');
-    for(const k of ['advertise','share','agentPublicAccess','accessMode','responseMode','responseChunkSize','maxJobs','perPeerConcurrent','perPeerQueue','maxQueue','rpmLimit','tpmLimit','maxRemoteTokens','queueTimeoutSec','grantHours','grantModels','serveModels','nknEnabled','natsEnabled','natsTargetPeers','natsReservoirSize']){
+    for(const k of ['advertise','share','agentPublicAccess','accessMode','responseMode','responseChunkSize','reasoningMode','toolsEnabled','toolMaxRounds','maxJobs','perPeerConcurrent','perPeerQueue','maxQueue','rpmLimit','tpmLimit','maxRemoteTokens','queueTimeoutSec','grantHours','grantModels','serveModels','nknEnabled','natsEnabled','natsTargetPeers','natsReservoirSize']){
       if(p[k]!==undefined) state[k]=p[k];
     }
+    const bt=JSON.parse(localStorage.getItem('oim.browserTools')||'null');
+    if(Array.isArray(bt))state.enabledBrowserTools=new Set(bt);
     const a=JSON.parse(localStorage.getItem('oim.allowlist')||'[]');
     state.allowlist=new Set(Array.isArray(a)?a:[]);
     const pa=JSON.parse(localStorage.getItem('oim.peerAccepted')||'[]');
@@ -1171,11 +1236,12 @@ function loadPolicy(){
 }
 function persistPolicy(){
   localStorage.setItem('oim.policy',JSON.stringify({
-    advertise:state.advertise,share:state.share,agentPublicAccess:state.agentPublicAccess,accessMode:state.accessMode,responseMode:state.responseMode,responseChunkSize:state.responseChunkSize,
+    advertise:state.advertise,share:state.share,agentPublicAccess:state.agentPublicAccess,accessMode:state.accessMode,responseMode:state.responseMode,responseChunkSize:state.responseChunkSize,reasoningMode:state.reasoningMode,toolsEnabled:state.toolsEnabled,toolMaxRounds:state.toolMaxRounds,
     maxJobs:state.maxJobs,perPeerConcurrent:state.perPeerConcurrent,perPeerQueue:state.perPeerQueue,maxQueue:state.maxQueue,
     rpmLimit:state.rpmLimit,tpmLimit:state.tpmLimit,maxRemoteTokens:state.maxRemoteTokens,
     queueTimeoutSec:state.queueTimeoutSec,grantHours:state.grantHours,grantModels:state.grantModels,serveModels:state.serveModels,nknEnabled:state.nknEnabled,natsEnabled:state.natsEnabled,natsTargetPeers:state.natsTargetPeers,natsReservoirSize:state.natsReservoirSize
   }));
+  localStorage.setItem('oim.browserTools',JSON.stringify([...state.enabledBrowserTools]));
   localStorage.setItem('oim.allowlist',JSON.stringify([...state.allowlist]));
   localStorage.setItem('oim.peerAccepted',JSON.stringify([...state.peerAccepted]));
   localStorage.setItem('oim.peerDenied',JSON.stringify([...state.peerDenied]));
@@ -1190,6 +1256,10 @@ function syncPolicyUI(){
   $('#accessMode').value=state.accessMode;
   if($('#responseModeSelect'))$('#responseModeSelect').value=state.responseMode||CONFIG.defaultResponseMode;
   if($('#responseChunkSize'))$('#responseChunkSize').value=state.responseChunkSize||CONFIG.defaultChunkSize;
+  if($('#reasoningModeSelect'))$('#reasoningModeSelect').value=state.reasoningMode||'auto';
+  if($('#reasoningModeSide'))$('#reasoningModeSide').value=state.reasoningMode||'auto';
+  if($('#toolsMasterToggle'))toggleButton($('#toolsMasterToggle'),state.toolsEnabled);
+  if($('#toolMaxRounds'))$('#toolMaxRounds').value=state.toolMaxRounds||6;
   for(const [id,k] of [
     ['maxJobs','maxJobs'],['perPeerConcurrent','perPeerConcurrent'],['perPeerQueue','perPeerQueue'],['maxQueue','maxQueue'],
     ['rpmLimit','rpmLimit'],['tpmLimit','tpmLimit'],['maxRemoteTokens','maxRemoteTokens'],
@@ -1312,6 +1382,232 @@ async function requestLanPermission(){
   log('ok','Permission request completed; now add/scan your actual inference endpoint.');
 }
 
+
+const BUILTIN_BROWSER_TOOLS = {
+  oim_time:{
+    enabled:true,source:'local',description:'Get the browser current date/time and timezone.',
+    definition:{type:'function',function:{name:'oim_time',description:'Get the current browser-local date, time, timezone and UTC timestamp.',parameters:{type:'object',properties:{},additionalProperties:false}}}
+  },
+  oim_calculate:{
+    enabled:true,source:'local',description:'Safe arithmetic calculator.',
+    definition:{type:'function',function:{name:'oim_calculate',description:'Evaluate a basic arithmetic expression using numbers, parentheses, + - * / % and exponentiation.',parameters:{type:'object',properties:{expression:{type:'string'}},required:['expression'],additionalProperties:false}}}
+  },
+  oim_mesh_state:{
+    enabled:true,source:'local',description:'Read non-secret mesh/node/provider state.',
+    definition:{type:'function',function:{name:'oim_mesh_state',description:'Read non-secret Open Inference Mesh state including peers, queues, providers and discovery health.',parameters:{type:'object',properties:{},additionalProperties:false}}}
+  },
+  oim_list_models:{
+    enabled:true,source:'local',description:'List local and mesh model routes.',
+    definition:{type:'function',function:{name:'oim_list_models',description:'List available local and remote inference models and route metadata.',parameters:{type:'object',properties:{},additionalProperties:false}}}
+  },
+  wikipedia_search:{
+    enabled:true,source:'https://en.wikipedia.org/w/api.php',description:'Search Wikipedia through its public API.',
+    definition:{type:'function',function:{name:'wikipedia_search',description:'Search English Wikipedia and return matching page titles, snippets and URLs.',parameters:{type:'object',properties:{query:{type:'string'},limit:{type:'integer',minimum:1,maximum:8}},required:['query'],additionalProperties:false}}}
+  },
+  open_meteo_weather:{
+    enabled:true,source:'https://api.open-meteo.com/v1/forecast',description:'Current weather / short forecast by coordinates.',
+    definition:{type:'function',function:{name:'open_meteo_weather',description:'Get current weather and a short forecast from Open-Meteo for latitude/longitude.',parameters:{type:'object',properties:{latitude:{type:'number',minimum:-90,maximum:90},longitude:{type:'number',minimum:-180,maximum:180},forecast_days:{type:'integer',minimum:1,maximum:7}},required:['latitude','longitude'],additionalProperties:false}}}
+  },
+  hackernews_search:{
+    enabled:true,source:'https://hn.algolia.com/api/v1/search',description:'Search Hacker News through Algolia public API.',
+    definition:{type:'function',function:{name:'hackernews_search',description:'Search Hacker News stories/comments and return recent matching results.',parameters:{type:'object',properties:{query:{type:'string'},limit:{type:'integer',minimum:1,maximum:10}},required:['query'],additionalProperties:false}}}
+  },
+  public_fetch:{
+    enabled:false,source:'public HTTP(S) GET',description:'Fetch text/JSON from a public CORS-enabled URL. Private/LAN targets are blocked.',
+    definition:{type:'function',function:{name:'public_fetch',description:'Fetch a public HTTP(S) URL using GET with credentials omitted. Private, loopback and LAN targets are blocked.',parameters:{type:'object',properties:{url:{type:'string'},max_chars:{type:'integer',minimum:256,maximum:20000}},required:['url'],additionalProperties:false}}}
+  }
+};
+
+function browserToolCatalog(){
+  const out={};
+  for(const [name,spec] of Object.entries(BUILTIN_BROWSER_TOOLS))out[name]=spec;
+  for(const [name,spec] of state.customBrowserTools)out[name]=spec;
+  return out;
+}
+function enabledBrowserToolDefinitions(){
+  if(!state.toolsEnabled)return [];
+  const catalog=browserToolCatalog();
+  return [...state.enabledBrowserTools].map(name=>catalog[name]?.definition).filter(Boolean);
+}
+function browserToolState(){
+  const catalog=browserToolCatalog();
+  return Object.entries(catalog).map(([name,spec])=>({
+    name,enabled:state.toolsEnabled&&state.enabledBrowserTools.has(name),
+    source:spec.source||'custom',description:spec.description||spec.definition?.function?.description||''
+  }));
+}
+function renderBrowserTools(){
+  const box=$('#browserToolList');if(!box)return;
+  box.innerHTML='';
+  const catalog=browserToolCatalog();
+  for(const [name,spec] of Object.entries(catalog)){
+    const row=document.createElement('div');row.className='browser-tool-row';
+    const enabled=state.enabledBrowserTools.has(name);
+    row.innerHTML=`<div class="tool-info"><div class="tool-name">${esc(name)}</div><div class="tool-desc">${esc(spec.description||spec.definition?.function?.description||'')}</div><div class="tool-source">${esc(spec.source||'custom')}</div></div><button class="toggle ${enabled?'on':''}" aria-label="Toggle ${esc(name)}"></button>`;
+    row.querySelector('button').onclick=()=>{
+      if(state.enabledBrowserTools.has(name))state.enabledBrowserTools.delete(name);else state.enabledBrowserTools.add(name);
+      persistPolicy();renderBrowserTools();emitAgentState?.();
+    };
+    box.append(row);
+  }
+}
+function registerBrowserTool(spec){
+  if(!spec||typeof spec!=='object')throw new Error('tool spec object required');
+  const name=String(spec.name||spec.definition?.function?.name||'').trim();
+  if(!/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(name))throw new Error('invalid tool name');
+  if(typeof spec.execute!=='function')throw new Error('custom tool execute function required');
+  const definition=spec.definition||{type:'function',function:{name,description:String(spec.description||''),parameters:spec.parameters||{type:'object',properties:{}}}};
+  state.customBrowserTools.set(name,{definition,execute:spec.execute,description:String(spec.description||definition.function?.description||''),source:String(spec.source||'custom browser function')});
+  state.enabledBrowserTools.add(name);persistPolicy();renderBrowserTools();
+  return name;
+}
+function safeCalcExpression(expr){
+  expr=String(expr||'').trim();
+  if(!expr||expr.length>256||!/^[0-9eE+\-*/%().\s]+$/.test(expr))throw new Error('calculator accepts numbers and arithmetic operators only');
+  const value=Function(`"use strict";return (${expr})`)();
+  if(typeof value!=='number'||!Number.isFinite(value))throw new Error('calculation did not produce a finite number');
+  return value;
+}
+function assertPublicToolUrl(raw){
+  const u=new URL(String(raw||''));
+  if(!['http:','https:'].includes(u.protocol))throw new Error('only http/https URLs are allowed');
+  const h=u.hostname.toLowerCase().replace(/^\[|\]$/g,'');
+  const blocked=h==='localhost'||h==='::1'||h==='0.0.0.0'||h.endsWith('.local')||
+    /^127\./.test(h)||/^10\./.test(h)||/^192\.168\./.test(h)||/^169\.254\./.test(h)||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(h)||/^fc/i.test(h)||/^fd/i.test(h)||/^fe8/i.test(h);
+  if(blocked)throw new Error('public_fetch blocks loopback/private/LAN destinations');
+  return u;
+}
+async function fetchToolJson(url,timeout=12000){
+  const res=await fetchTimeout(url,{method:'GET',credentials:'omit',cache:'no-store',redirect:'error',headers:{'Accept':'application/json,text/plain;q=0.8'}},timeout);
+  if(!res.ok)throw new Error(`HTTP ${res.status}`);
+  const text=(await res.text()).slice(0,60000);
+  try{return JSON.parse(text)}catch(_){return text}
+}
+async function executeBrowserToolCall(call){
+  const name=String(call?.function?.name||call?.name||'');
+  if(!state.toolsEnabled||!state.enabledBrowserTools.has(name))return {ok:false,error:`tool ${name} is disabled`};
+  const catalog=browserToolCatalog(),spec=catalog[name];
+  if(!spec)return {ok:false,error:`unknown tool ${name}`};
+  let args={};
+  const raw=call?.function?.arguments??call?.arguments??{};
+  try{args=typeof raw==='string'?(raw.trim()?JSON.parse(raw):{}):(raw||{})}catch(e){return {ok:false,error:`invalid ${name} arguments: ${e.message}`}}
+
+  const started=performance.now();
+  window.dispatchEvent(new CustomEvent('oim:tool-call',{detail:{name,args,id:call.id||null,ts:now()}}));
+  try{
+    let output;
+    if(spec.execute){
+      output=await spec.execute(args);
+    }else if(name==='oim_time'){
+      output={iso:new Date().toISOString(),local:new Date().toString(),timezone:Intl.DateTimeFormat().resolvedOptions().timeZone||null,offset_minutes:-new Date().getTimezoneOffset()};
+    }else if(name==='oim_calculate'){
+      output={expression:String(args.expression||''),value:safeCalcExpression(args.expression)};
+    }else if(name==='oim_mesh_state'){
+      output=agentSnapshot();
+    }else if(name==='oim_list_models'){
+      output=listAgentModels();
+    }else if(name==='wikipedia_search'){
+      const q=String(args.query||'').trim();if(!q)throw new Error('query required');
+      const limit=clamp(Number(args.limit)||5,1,8);
+      const u=`https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&origin=*&utf8=1&srlimit=${limit}&srsearch=${encodeURIComponent(q)}`;
+      const data=await fetchToolJson(u);
+      output=(data.query?.search||[]).map(x=>({title:x.title,snippet:String(x.snippet||'').replace(/<[^>]+>/g,''),url:`https://en.wikipedia.org/wiki/${encodeURIComponent(String(x.title).replace(/ /g,'_'))}`}));
+    }else if(name==='open_meteo_weather'){
+      const lat=Number(args.latitude),lon=Number(args.longitude);if(!Number.isFinite(lat)||!Number.isFinite(lon))throw new Error('latitude and longitude required');
+      const days=clamp(Number(args.forecast_days)||3,1,7);
+      const u=`https://api.open-meteo.com/v1/forecast?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}&current=temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&forecast_days=${days}&timezone=auto`;
+      output=await fetchToolJson(u);
+    }else if(name==='hackernews_search'){
+      const q=String(args.query||'').trim();if(!q)throw new Error('query required');
+      const limit=clamp(Number(args.limit)||5,1,10);
+      const data=await fetchToolJson(`https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(q)}&hitsPerPage=${limit}`);
+      output=(data.hits||[]).map(x=>({title:x.title||x.story_title||null,url:x.url||x.story_url||null,author:x.author,points:x.points,created_at:x.created_at,objectID:x.objectID}));
+    }else if(name==='public_fetch'){
+      const u=assertPublicToolUrl(args.url);
+      const maxChars=clamp(Number(args.max_chars)||12000,256,20000);
+      const res=await fetchTimeout(u.href,{method:'GET',credentials:'omit',cache:'no-store',redirect:'error',headers:{'Accept':'application/json,text/plain,text/html;q=0.7'}},15000);
+      if(!res.ok)throw new Error(`HTTP ${res.status}`);
+      const contentType=res.headers.get('content-type')||'';
+      const text=(await res.text()).slice(0,maxChars);
+      output={url:u.href,status:res.status,content_type:contentType,text};
+    }else throw new Error(`no executor for ${name}`);
+
+    const result={ok:true,tool:name,output,duration_ms:Math.round(performance.now()-started)};
+    window.dispatchEvent(new CustomEvent('oim:tool-result',{detail:result}));
+    return result;
+  }catch(e){
+    const result={ok:false,tool:name,error:String(e?.message||e),duration_ms:Math.round(performance.now()-started)};
+    window.dispatchEvent(new CustomEvent('oim:tool-result',{detail:result}));
+    return result;
+  }
+}
+function addToolTrace(entry,beforeEl=null){
+  const box=$('#messages');if(!box)return null;
+  const div=document.createElement('div');
+  div.className=`tool-trace ${entry.ok?'':'error'}`;
+  const argsText=JSON.stringify(entry.args||{},null,2);
+  const resultText=entry.ok?JSON.stringify(entry.output,null,2):String(entry.error||'tool failed');
+  div.innerHTML=`<div class="tool-trace-head"><span>${entry.ok?'TOOL':'TOOL ERROR'}</span><span>${esc(entry.name||entry.tool||'')}</span><span class="mini">${entry.duration_ms??''}${entry.duration_ms!=null?'ms':''}</span></div><div class="tool-trace-body">${esc((argsText?`args ${argsText}\n`:'')+resultText).slice(0,6000)}</div>`;
+  if(beforeEl&&beforeEl.parentNode===box)box.insertBefore(div,beforeEl);else box.append(div);
+  box.scrollTop=box.scrollHeight;
+  return div;
+}
+
+function reasoningModeForRequest(mode){return ['on','off'].includes(mode)?mode:'auto'}
+function applyReasoningPayload(payload,ep,mode){
+  mode=reasoningModeForRequest(mode);
+  if(mode==='auto')return payload;
+  const style=ep?.capabilities?.reasoningStyle||'server';
+  if(style==='reasoning_effort')payload.reasoning_effort=mode==='on'?'medium':'none';
+  else if(style==='chat_template_kwargs'){
+    payload.chat_template_kwargs={...(payload.chat_template_kwargs||{}),enable_thinking:mode==='on',thinking:mode==='on'};
+  }
+  return payload;
+}
+function endpointCapsCache(){
+  try{return JSON.parse(localStorage.getItem('oim.endpointCaps')||'{}')||{}}catch(_){return {}}
+}
+function saveEndpointCaps(url,model,caps){
+  const c=endpointCapsCache();c[url]={model,caps,ts:now()};localStorage.setItem('oim.endpointCaps',JSON.stringify(c));
+}
+async function probeCapabilityRequest(ep,body){
+  const headers={'Content-Type':'application/json','Accept':'application/json'};
+  if(ep.apiKey)headers.Authorization=`Bearer ${ep.apiKey}`;
+  const res=await fetchTimeout(`${ep.url}/v1/chat/completions`,fetchOptsFor(ep.url,{method:'POST',headers,body:JSON.stringify(body)}),12000);
+  if(res.body){try{await res.body.cancel()}catch(_){}}
+  return res.ok;
+}
+async function probeEndpointCapabilities(ep,{force=false}={}){
+  if(!ep||ep.status!=='up'||!ep.models?.length)return null;
+  if(ep._capProbePromise&&!force)return ep._capProbePromise;
+  ep._capProbePromise=(async()=>{
+    const model=ep.models[0],cache=endpointCapsCache()[ep.url];
+    if(!force&&cache?.model===model&&now()-Number(cache.ts||0)<24*3600_000){
+      ep.capabilities={...cache.caps,status:'cached'};renderEndpoints();return ep.capabilities;
+    }
+    ep.capabilities={status:'probing',toolsNative:false,reasoningStyle:'server'};renderEndpoints();
+    const base={model,messages:[{role:'user',content:'Reply OK.'}],stream:false,max_tokens:1,temperature:0};
+    try{
+      ep.capabilities.toolsNative=await probeCapabilityRequest(ep,{...base,tools:[{type:'function',function:{name:'oim_probe',description:'Capability probe only.',parameters:{type:'object',properties:{},additionalProperties:false}}}],tool_choice:'none'});
+    }catch(_){ep.capabilities.toolsNative=false}
+    try{
+      if(await probeCapabilityRequest(ep,{...base,reasoning_effort:'none'}))ep.capabilities.reasoningStyle='reasoning_effort';
+      else if(await probeCapabilityRequest(ep,{...base,chat_template_kwargs:{enable_thinking:false}}))ep.capabilities.reasoningStyle='chat_template_kwargs';
+    }catch(_){}
+    ep.capabilities.status='ready';ep.capabilities.probedAt=now();
+    saveEndpointCaps(ep.url,model,ep.capabilities);renderEndpoints();
+    log('info',`${ep.label||'endpoint'} capabilities: tools ${ep.capabilities.toolsNative?'native':'prompt-fallback'} · reasoning ${ep.capabilities.reasoningStyle}.`);
+    return ep.capabilities;
+  })().finally(()=>{ep._capProbePromise=null});
+  return ep._capProbePromise;
+}
+async function probeAllEndpointCapabilities(force=true){
+  const eps=[...state.endpoints.values()].filter(ep=>ep.status==='up');
+  await Promise.allSettled(eps.map(ep=>probeEndpointCapabilities(ep,{force})));
+  renderEndpoints();
+}
+
 function normalizeBaseUrl(raw){
   let s=raw.trim();
   if(!s) return '';
@@ -1382,6 +1678,7 @@ async function probeEndpoint(url, label='manual', apiKey=''){
   state.endpoints.set(url,ep);
   renderEndpoints(); refreshModelSelect(); updateStats();
   log('ok',`Inference endpoint online: ${url} · ${models.length} model(s) · ${latency}ms`);
+  if(models.length)await probeEndpointCapabilities(ep).catch(()=>{});
   scheduleAnnounce();
   return ep;
 }
@@ -1422,6 +1719,8 @@ function renderEndpoints(){
       </div>
       <div class="tags">
         ${ep.status==='up'?`<span class="tag good">${esc(ep.latency)}ms</span>`:''}
+        ${ep.status==='up'&&ep.capabilities?.status==='probing'?`<span class="tag cap-warn">CAPS…</span>`:''}
+        ${ep.status==='up'&&ep.capabilities?.status&&ep.capabilities.status!=='probing'?`<span class="tag ${ep.capabilities.toolsNative?'cap-ok':'cap-warn'}">TOOLS ${ep.capabilities.toolsNative?'NATIVE':'BROKER'}</span><span class="tag cap-ok">REASON ${esc(ep.capabilities.reasoningStyle||'SERVER').toUpperCase()}</span>`:''}
         ${(ep.models||[]).slice(0,5).map(m=>`<span class="tag">${esc(m)}</span>`).join('')}
         ${(ep.models||[]).length>5?`<span class="tag">+${ep.models.length-5}</span>`:''}
         ${ep.status==='down'?`<span class="tag warn">${esc(ep.error||'unreachable')}</span>`:''}
@@ -2437,12 +2736,16 @@ async function authorizeRemoteJob(peerMeta,data){
   if(state.peerDenied.has(peerMeta.node))return {ok:false,error:'peer denied by provider'};
   if(state.peerAccepted.has(peerMeta.node)&&!state.peerEnabled.has(peerMeta.node))return {ok:false,error:'peer is disabled by provider'};
   if(!state.share)return {ok:false,error:'peer inference sharing disabled'};
-  const prompt=String(data.prompt||'');
-  if(!prompt||prompt.length>48000)return {ok:false,error:'prompt invalid or too large'};
+  const messages=sanitizeInferenceMessages(data.messages,data.prompt);
+  if(!messages.length)return {ok:false,error:'messages invalid or empty'};
+  const serialized=JSON.stringify(messages);
+  if(serialized.length>96000)return {ok:false,error:'conversation too large'};
+  const prompt=String([...messages].reverse().find(m=>m.role==='user')?.content||data.prompt||'');
+  const tools=sanitizeRemoteTools(data.tools||[]);
   const match=findShareableLocalModel(data.model);
   if(!match)return {ok:false,error:'requested model unavailable or outside provider model scope'};
   const requestedMax=clamp(Number(data.max_tokens)||CONFIG.defaultMaxTokens,1,state.maxRemoteTokens);
-  const estTokens=estimateJobTokens(prompt,requestedMax);
+  const estTokens=Math.ceil(serialized.length/4)+requestedMax;
 
   let grant=null;
   if(data.grant)grant=await validateCapabilityToken(data.grant,peerMeta.node,match.model);
@@ -2456,12 +2759,12 @@ async function authorizeRemoteJob(peerMeta,data){
   const concurrent=Math.max(1,Math.min(state.perPeerConcurrent,Number(grantLimits.concurrent)||state.perPeerConcurrent));
   const tokenMax=Math.max(1,Math.min(state.maxRemoteTokens,Number(grantLimits.max_tokens)||state.maxRemoteTokens));
   const finalMax=Math.min(requestedMax,tokenMax);
-  const finalEst=estimateJobTokens(prompt,finalMax);
+  const finalEst=Math.ceil(serialized.length/4)+finalMax;
   const u=usageTotals(peerMeta.node);
   if(u.rpm>=rpm)return {ok:false,error:`rate limit: ${rpm} requests/min`,retryAfterMs:60_000-(now()-(cleanUsage(peerMeta.node)[0]?.ts||now()))};
   if(u.tpm+finalEst>tpm)return {ok:false,error:`rate limit: ${tpm} estimated tokens/min`,retryAfterMs:60_000-(now()-(cleanUsage(peerMeta.node)[0]?.ts||now()))};
   if(activeForNode(peerMeta.node)>=concurrent)return {ok:false,error:`per-peer concurrency limit ${concurrent}`,queueable:true};
-  return {ok:true,match,prompt,maxTokens:finalMax,estTokens:finalEst,grant,concurrent};
+  return {ok:true,match,prompt,messages,tools,maxTokens:finalMax,estTokens:finalEst,grant,concurrent};
 }
 function sendJobState(wrapper,peerId,id,status,extra={}){
   wrapper.actions.state.send({
@@ -2528,9 +2831,11 @@ async function executeRemoteJob(job){
     const responseMode=data.response_mode==='chunked'?'chunked':'stream';
     const chunkSize=clamp(Number(data.chunk_size)||CONFIG.defaultChunkSize,32,4096);
     let seq=0;
-    const completion=await callOpenAI(auth.match.endpoint,auth.match.model,[{role:'user',content:auth.prompt}],{
+    const completion=await callOpenAI(auth.match.endpoint,auth.match.model,auth.messages,{
       temperature:clamp(Number(data.temperature)||0.7,0,2),
       max_tokens:auth.maxTokens,return_meta:true,
+      tools:auth.tools,
+      reasoning_mode:reasoningModeForRequest(data.reasoning_mode||'auto'),
       response_mode:responseMode,chunk_size:chunkSize,
       on_delta:async delta=>{
         await wrapper.actions.delta.send({id:data.id,delta,seq:seq++,mode:responseMode,ts:now()},{target:peerId}).catch(()=>{});
@@ -2546,6 +2851,10 @@ async function executeRemoteJob(job){
       tps:Number(sampleTps.toFixed(2)),
       tps_ema:Number(state.providerPerf.tpsEma.toFixed(2)),
       usage:completion.usage||null,
+      tool_calls:completion.tool_calls||[],
+      tools_mode:completion.tools_mode||'off',
+      reasoning_mode:completion.reasoning_mode||reasoningModeForRequest(data.reasoning_mode||'auto'),
+      reasoning_style:completion.reasoning_style||'server',
       response_mode:responseMode,
       chunk_size:responseMode==='chunked'?chunkSize:null,
       queue_ms:Math.max(0,(job.started||now())-(job.enqueued||now()))
@@ -3029,57 +3338,172 @@ function findLocalModel(name){
   return lm.find(x=>x.model===name)||lm.find(x=>x.model.toLowerCase().includes(String(name).toLowerCase()))||null;
 }
 
+
+function normalizeToolCalls(calls){
+  if(!Array.isArray(calls))return [];
+  return calls.map((c,i)=>{
+    const fn=c?.function||{};
+    let args=fn.arguments??c?.arguments??'{}';
+    if(typeof args!=='string')args=JSON.stringify(args||{});
+    return {
+      id:String(c?.id||`call_${uuid().replaceAll('-','').slice(0,16)}`),
+      type:'function',
+      function:{name:String(fn.name||c?.name||''),arguments:args}
+    };
+  }).filter(c=>/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(c.function.name));
+}
+function extractFallbackToolCalls(text){
+  text=String(text||'');
+  const calls=[];
+  const re=/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi;
+  let m;
+  while((m=re.exec(text))){
+    try{
+      const obj=JSON.parse(m[1]);
+      const name=String(obj.name||obj.function?.name||'');
+      const args=obj.arguments??obj.function?.arguments??{};
+      if(/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(name)){
+        calls.push({id:`call_${uuid().replaceAll('-','').slice(0,16)}`,type:'function',function:{name,arguments:typeof args==='string'?args:JSON.stringify(args)}});
+      }
+    }catch(_){}
+  }
+  return {tool_calls:calls,text:text.replace(re,'').trim()};
+}
+function fallbackToolSystemPrompt(tools){
+  const compact=tools.map(t=>({name:t.function?.name,description:t.function?.description,parameters:t.function?.parameters}));
+  return `Browser tools are available through a strict text protocol. When a tool is needed, output ONLY one or more tags exactly like:
+<tool_call>{"name":"TOOL_NAME","arguments":{"arg":"value"}}</tool_call>
+Do not invent tool names. The browser executes the tool and returns <tool_result> data in the next turn. If no tool is needed, answer normally.
+AVAILABLE TOOLS:
+${JSON.stringify(compact)}`;
+}
+function prepareFallbackToolMessages(messages,tools){
+  const out=[{role:'system',content:fallbackToolSystemPrompt(tools)}];
+  for(const m of messages){
+    if(m.role==='assistant'&&Array.isArray(m.tool_calls)&&m.tool_calls.length){
+      const tags=m.tool_calls.map(tc=>`<tool_call>${JSON.stringify({name:tc.function?.name,arguments:(()=>{try{return JSON.parse(tc.function?.arguments||'{}')}catch(_){return tc.function?.arguments||{}}})()})}</tool_call>`).join('\n');
+      out.push({role:'assistant',content:[m.content||'',tags].filter(Boolean).join('\n')});
+    }else if(m.role==='tool'){
+      out.push({role:'user',content:`<tool_result name="${String(m.name||'tool').replace(/["><]/g,'')}">${String(m.content||'')}</tool_result>`});
+    }else{
+      out.push({role:m.role,content:m.content??''});
+    }
+  }
+  return out;
+}
+function sanitizeRemoteTools(tools){
+  if(!Array.isArray(tools))return [];
+  const out=[];
+  for(const t of tools.slice(0,16)){
+    if(t?.type!=='function'||!t.function)continue;
+    const name=String(t.function.name||'');
+    if(!/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(name))continue;
+    const x={type:'function',function:{name,description:String(t.function.description||'').slice(0,1000),parameters:t.function.parameters&&typeof t.function.parameters==='object'?t.function.parameters:{type:'object',properties:{}}}};
+    if(JSON.stringify(x).length<=12000)out.push(x);
+  }
+  return JSON.stringify(out).length<=40000?out:[];
+}
+function sanitizeInferenceMessages(messages,prompt=''){
+  if(!Array.isArray(messages)||!messages.length)messages=[{role:'user',content:String(prompt||'')}];
+  const allowed=new Set(['system','user','assistant','tool']);
+  const out=[];
+  let total=0;
+  for(const m of messages.slice(-48)){
+    const role=allowed.has(m?.role)?m.role:null;if(!role)continue;
+    const item={role};
+    if(m.content==null)item.content=null;
+    else item.content=String(m.content).slice(0,48000);
+    if(role==='assistant'&&Array.isArray(m.tool_calls))item.tool_calls=normalizeToolCalls(m.tool_calls).slice(0,16);
+    if(role==='tool'){
+      item.tool_call_id=String(m.tool_call_id||'').slice(0,128);
+      item.name=String(m.name||'tool').slice(0,64);
+    }
+    total+=JSON.stringify(item).length;
+    if(total>96000)break;
+    out.push(item);
+  }
+  return out;
+}
+
 async function callOpenAI(endpointUrl,model,messages,extra={}){
   const ep=state.endpoints.get(endpointUrl);
   if(!ep||ep.status!=='up')throw new Error('endpoint is not online');
 
   const responseMode=extra.response_mode==='chunked'?'chunked':'stream';
   const chunkSize=clamp(Number(extra.chunk_size)||state.responseChunkSize||CONFIG.defaultChunkSize,32,4096);
+  const requestedTools=sanitizeRemoteTools(extra.tools||[]);
+  const reasoningMode=reasoningModeForRequest(extra.reasoning_mode??state.reasoningMode);
+
+  if((requestedTools.length||reasoningMode!=='auto')&&ep.models?.length){
+    try{await probeEndpointCapabilities(ep)}catch(_){}
+  }
+
+  const nativeTools=!!ep.capabilities?.toolsNative;
   const headers={'Content-Type':'application/json','Accept':'text/event-stream, application/json'};
   if(ep.apiKey)headers['Authorization']=`Bearer ${ep.apiKey}`;
 
+  const requestMessages=requestedTools.length&&!nativeTools
+    ?prepareFallbackToolMessages(messages,requestedTools)
+    :messages;
+
   const payload={
-    model,messages,stream:true,
+    model,messages:requestMessages,stream:true,
     temperature:extra.temperature??0.7,
     max_tokens:extra.max_tokens??CONFIG.defaultMaxTokens
   };
+  if(requestedTools.length&&nativeTools){
+    payload.tools=requestedTools;
+    payload.tool_choice='auto';
+  }
+  applyReasoningPayload(payload,ep,reasoningMode);
 
   const res=await fetchTimeout(`${endpointUrl}/v1/chat/completions`,fetchOptsFor(endpointUrl,{
     method:'POST',headers,body:JSON.stringify(payload)
   }),180_000);
 
   if(!res.ok){
-    let body='';try{body=(await res.text()).slice(0,500)}catch(_){}
+    let body='';try{body=(await res.text()).slice(0,800)}catch(_){}
     throw new Error(`inference HTTP ${res.status}${body?': '+body:''}`);
   }
 
   const contentType=(res.headers.get('content-type')||'').toLowerCase();
 
-  // Compatibility fallback for servers that ignore stream:true.
   if(contentType.includes('application/json')){
     const data=await res.json();
-    const content=data.choices?.[0]?.message?.content ?? data.choices?.[0]?.text;
-    if(content==null)throw new Error('response contained no text choice');
-    const text=typeof content==='string'?content:JSON.stringify(content);
-    if(extra.on_delta)await extra.on_delta(text,text,{mode:responseMode,final:true});
-    if(extra.return_meta){
-      return {text,usage:data.usage||null,
-        completion_tokens:Number(data.usage?.completion_tokens)||0,
-        prompt_tokens:Number(data.usage?.prompt_tokens)||0,
-        total_tokens:Number(data.usage?.total_tokens)||0};
+    const msg=data.choices?.[0]?.message||{};
+    let text=msg.content ?? data.choices?.[0]?.text ?? '';
+    if(typeof text!=='string')text=text==null?'':JSON.stringify(text);
+    let toolCalls=normalizeToolCalls(msg.tool_calls||[]);
+    if(requestedTools.length&&!nativeTools){
+      const parsed=extractFallbackToolCalls(text);toolCalls=parsed.tool_calls;text=parsed.text;
     }
+    if(extra.on_delta&&text)await extra.on_delta(text,text,{mode:responseMode,final:true});
+    const result={
+      text,tool_calls:toolCalls,usage:data.usage||null,
+      reasoning:msg.reasoning??msg.reasoning_content??null,
+      completion_tokens:Number(data.usage?.completion_tokens)||0,
+      prompt_tokens:Number(data.usage?.prompt_tokens)||0,
+      total_tokens:Number(data.usage?.total_tokens)||0,
+      tools_mode:requestedTools.length?(nativeTools?'native':'prompt'):'off',
+      reasoning_mode:reasoningMode,
+      reasoning_style:ep.capabilities?.reasoningStyle||'server'
+    };
+    if(extra.return_meta)return result;
     return text;
   }
 
   if(!res.body)throw new Error('streaming response has no readable body');
   const reader=res.body.getReader();
   const decoder=new TextDecoder();
-  let buffer='',full='',usage=null,chunkBuffer='';
+  let buffer='',full='',usage=null,chunkBuffer='',reasoning='';
   let completionTokens=0,promptTokens=0,totalTokens=0;
+  const toolParts=new Map();
+  const suppressFallbackStream=requestedTools.length&&!nativeTools;
 
   const emit=async delta=>{
     if(!delta)return;
     full+=delta;
+    if(suppressFallbackStream)return;
     if(responseMode==='stream'){
       if(extra.on_delta)await extra.on_delta(delta,full,{mode:'stream',final:false});
     }else{
@@ -3090,7 +3514,17 @@ async function callOpenAI(endpointUrl,model,messages,extra={}){
       }
     }
   };
-
+  const ingestToolParts=parts=>{
+    if(!Array.isArray(parts))return;
+    for(let i=0;i<parts.length;i++){
+      const tc=parts[i]||{},idx=Number.isInteger(tc.index)?tc.index:i;
+      const old=toolParts.get(idx)||{id:'',type:'function',function:{name:'',arguments:''}};
+      if(tc.id)old.id=tc.id;
+      if(tc.function?.name)old.function.name=tc.function.name;
+      if(tc.function?.arguments)old.function.arguments+=tc.function.arguments;
+      toolParts.set(idx,old);
+    }
+  };
   const consume=async raw=>{
     raw=String(raw||'').trim();
     if(!raw)return false;
@@ -3102,10 +3536,13 @@ async function callOpenAI(endpointUrl,model,messages,extra={}){
       promptTokens=Number(data.usage.prompt_tokens)||promptTokens;
       totalTokens=Number(data.usage.total_tokens)||totalTokens;
     }
-    const choice=data.choices?.[0];
-    let delta=choice?.delta?.content;
-    if(delta==null)delta=choice?.text;
-    if(delta==null&&typeof choice?.message?.content==='string')delta=choice.message.content;
+    const choice=data.choices?.[0]||{};
+    const deltaObj=choice.delta||choice.message||{};
+    ingestToolParts(deltaObj.tool_calls||choice.message?.tool_calls);
+    const r=deltaObj.reasoning??deltaObj.reasoning_content;
+    if(typeof r==='string')reasoning+=r;
+    let delta=deltaObj.content;
+    if(delta==null)delta=choice.text;
     if(Array.isArray(delta))delta=delta.map(x=>x?.text||x?.content||'').join('');
     if(delta!=null)await emit(typeof delta==='string'?delta:JSON.stringify(delta));
     return false;
@@ -3125,20 +3562,30 @@ async function callOpenAI(endpointUrl,model,messages,extra={}){
   }
   buffer+=decoder.decode();
   if(buffer.trim()){
-    for(const line of buffer.split(/\r?\n/)){
-      if(line.startsWith('data:'))await consume(line.slice(5));
-    }
+    for(const line of buffer.split(/\r?\n/))if(line.startsWith('data:'))await consume(line.slice(5));
   }
 
-  if(responseMode==='chunked'&&chunkBuffer){
+  if(responseMode==='chunked'&&chunkBuffer&&!suppressFallbackStream){
     const out=chunkBuffer;chunkBuffer='';
     if(extra.on_delta)await extra.on_delta(out,full,{mode:'chunked',final:false});
   }
-  if(!full)throw new Error('stream completed without response text');
 
-  if(extra.return_meta){
-    return {text:full,usage,completion_tokens:completionTokens,prompt_tokens:promptTokens,total_tokens:totalTokens};
+  let toolCalls=normalizeToolCalls([...toolParts.values()]);
+  if(requestedTools.length&&!nativeTools){
+    const parsed=extractFallbackToolCalls(full);toolCalls=parsed.tool_calls;full=parsed.text;
+    if(!toolCalls.length&&full&&extra.on_delta)await extra.on_delta(full,full,{mode:responseMode,final:true});
   }
+  if(!full&&!toolCalls.length)throw new Error('stream completed without text or tool calls');
+
+  const result={
+    text:full,tool_calls:toolCalls,usage,
+    reasoning:reasoning||null,
+    completion_tokens:completionTokens,prompt_tokens:promptTokens,total_tokens:totalTokens,
+    tools_mode:requestedTools.length?(nativeTools?'native':'prompt'):'off',
+    reasoning_mode:reasoningMode,
+    reasoning_style:ep.capabilities?.reasoningStyle||'server'
+  };
+  if(extra.return_meta)return result;
   return full;
 }
 
@@ -3216,7 +3663,11 @@ async function callRemote(peerId,model,prompt,providerNode=null,requestMeta={}){
           onDelta:requestMeta.on_delta||null,streamText:'',lastDeltaAt:0});
         try{
           await w.actions.infer.send({
-            id,model,prompt,grant:grant||null,agent:!!requestMeta.agent,
+            id,model,prompt,
+            messages:sanitizeInferenceMessages(requestMeta.messages,prompt),
+            tools:sanitizeRemoteTools(requestMeta.tools||[]),
+            grant:grant||null,agent:!!requestMeta.agent,
+            reasoning_mode:reasoningModeForRequest(requestMeta.reasoning_mode||state.reasoningMode),
             response_mode:requestMeta.response_mode==='chunked'?'chunked':'stream',
             chunk_size:clamp(Number(requestMeta.chunk_size)||state.responseChunkSize||CONFIG.defaultChunkSize,32,4096),
             temperature:requestMeta.temperature??0.7,max_tokens:requestMeta.max_tokens??CONFIG.defaultMaxTokens
@@ -3230,6 +3681,40 @@ async function callRemote(peerId,model,prompt,providerNode=null,requestMeta={}){
     }
   }
   throw lastErr||new Error('all direct provider routes failed');
+}
+
+
+async function runBrowserToolLoop({
+  messages,invoke,onDelta=null,onTool=null,useTools=true,
+  reasoningMode=state.reasoningMode,responseMode=state.responseMode,chunkSize=state.responseChunkSize,
+  maxRounds=state.toolMaxRounds
+}){
+  const transcript=sanitizeInferenceMessages(messages,'');
+  const tools=useTools&&state.toolsEnabled?enabledBrowserToolDefinitions():[];
+  const history=[];
+  for(let round=0;round<Math.max(1,Number(maxRounds)||6);round++){
+    const result=await invoke(transcript,{
+      tools,
+      reasoning_mode:reasoningModeForRequest(reasoningMode),
+      response_mode:responseMode==='chunked'?'chunked':'stream',
+      chunk_size:clamp(Number(chunkSize)||CONFIG.defaultChunkSize,32,4096),
+      on_delta:onDelta
+    });
+    const calls=normalizeToolCalls(result?.tool_calls||[]);
+    if(!calls.length)return {...result,tool_history:history,rounds:round+1};
+
+    transcript.push({role:'assistant',content:result.text||null,tool_calls:calls});
+    for(const call of calls){
+      const args=(()=>{try{return JSON.parse(call.function.arguments||'{}')}catch(_){return {raw:call.function.arguments||''}}})();
+      const exec=await executeBrowserToolCall(call);
+      const entry={name:call.function.name,id:call.id,args,...exec};
+      history.push(entry);
+      if(typeof onTool==='function'){try{await onTool(entry)}catch(_){}}
+      const content=JSON.stringify(exec.ok?exec.output:{error:exec.error,ok:false}).slice(0,30000);
+      transcript.push({role:'tool',tool_call_id:call.id,name:call.function.name,content});
+    }
+  }
+  throw new Error(`tool loop exceeded ${Math.max(1,Number(maxRounds)||6)} rounds`);
 }
 
 function addMessage(role,text,meta=''){
@@ -3258,6 +3743,7 @@ async function runPrompt(){
   if(!prompt)return;
   const route=$('#routeSelect').value;
   const responseMode=$('#responseModeSelect')?.value==='chunked'?'chunked':'stream';
+  const reasoningMode=reasoningModeForRequest($('#reasoningModeSelect')?.value||state.reasoningMode);
   const chunkSize=clamp(Number($('#responseChunkSize')?.value)||state.responseChunkSize||CONFIG.defaultChunkSize,32,4096);
   let choice=null;
   try{choice=JSON.parse($('#modelSelect').value)}catch(_){}
@@ -3265,7 +3751,7 @@ async function runPrompt(){
 
   $('#sendBtn').disabled=true;$('#jobProgress').style.width='18%';
   addMessage('user',prompt,'you');$('#promptInput').value='';
-  const assistant=addMessage('assistant','',`${responseMode.toUpperCase()} · waiting`);
+  const assistant=addMessage('assistant','',`${responseMode.toUpperCase()} · REASON ${reasoningMode.toUpperCase()} · waiting`);
   assistant.classList.add('streaming');
   const t0=performance.now();
   let streamed='';
@@ -3273,58 +3759,63 @@ async function runPrompt(){
   const onDelta=(delta,full)=>{
     streamed=full;setMessageText(assistant,full);$('#jobProgress').style.width='70%';
   };
+  const onTool=entry=>addToolTrace(entry,assistant);
 
   try{
-    let text,meta;
+    let result,meta;
+    const messages=[{role:'user',content:prompt}];
+
     if(route==='local'){
       const m=findLocalModel(choice.model);
       if(!m)throw new Error(`model ${choice.model} is not available locally`);
       $('#jobProgress').style.width='35%';state.localActiveJobs++;updateStats();
-      text=await callOpenAI(m.endpoint,m.model,[{role:'user',content:prompt}],{
-        response_mode:responseMode,chunk_size:chunkSize,on_delta:onDelta
+      result=await runBrowserToolLoop({
+        messages,onDelta,onTool,reasoningMode,responseMode,chunkSize,
+        invoke:(msgs,ctx)=>callOpenAI(m.endpoint,m.model,msgs,{
+          ...ctx,return_meta:true,max_tokens:CONFIG.defaultMaxTokens,temperature:0.7
+        })
       });
-      meta=`LOCAL · ${m.model} · ${responseMode.toUpperCase()} · ${Math.round(performance.now()-t0)}ms`;
+      meta=`LOCAL · ${m.model} · ${responseMode.toUpperCase()} · REASON ${reasoningMode.toUpperCase()} · ${result.tool_history?.length||0} tool${result.tool_history?.length===1?'':'s'} · ${Math.round(performance.now()-t0)}ms`;
       state.lastRoute='local';
-    }else if(route==='mesh'){
-      const rp=chooseRemotePeer(choice.model,choice.providerNode||choice.peerId);
-      if(!rp){
-        const seen=[...state.peers.values()].filter(p=>p.online&&p.verified&&(p.models||[]).includes(choice.model));
-        const detail=seen.length?`${seen.length} signed route(s) know the model, but none currently advertise sharing`:`no signed live route currently reports the model`;
-        throw new Error(`no usable mesh route for ${choice.model}: ${detail}`);
-      }
-      $('#jobProgress').style.width='35%';
-      const res=await callRemote(rp[0],choice.model,prompt,choice.providerNode||rp[1]?.node,{
-        response_mode:responseMode,chunk_size:chunkSize,on_delta:onDelta
-      });
-      text=res.text;
-      meta=`MESH · ${res.model||choice.model} · ${responseMode.toUpperCase()}${res.tps?` · ${formatTps(res.tps)}`:''} · ${res.latency_ms||Math.round(performance.now()-t0)}ms`;
-      state.lastRoute='mesh';
     }else{
-      const m=findLocalModel(choice.model);
-      if(m){
-        $('#jobProgress').style.width='35%';state.localActiveJobs++;updateStats();
-        text=await callOpenAI(m.endpoint,m.model,[{role:'user',content:prompt}],{
-          response_mode:responseMode,chunk_size:chunkSize,on_delta:onDelta
-        });
-        meta=`AUTO→LOCAL · ${m.model} · ${responseMode.toUpperCase()} · ${Math.round(performance.now()-t0)}ms`;
-        state.lastRoute='local';
-      }else{
-        const rp=chooseRemotePeer(choice.model,choice.providerNode||choice.peerId);
+      let rp=null;
+      const choose=()=>chooseRemotePeer(choice.model,choice.providerNode||choice.peerId);
+      if(route==='mesh')rp=choose();
+      else{
+        const m=findLocalModel(choice.model);
+        if(m){
+          $('#jobProgress').style.width='35%';state.localActiveJobs++;updateStats();
+          result=await runBrowserToolLoop({
+            messages,onDelta,onTool,reasoningMode,responseMode,chunkSize,
+            invoke:(msgs,ctx)=>callOpenAI(m.endpoint,m.model,msgs,{...ctx,return_meta:true,max_tokens:CONFIG.defaultMaxTokens,temperature:0.7})
+          });
+          meta=`AUTO→LOCAL · ${m.model} · ${responseMode.toUpperCase()} · REASON ${reasoningMode.toUpperCase()} · ${result.tool_history?.length||0} tools`;
+          state.lastRoute='local';
+        }else rp=choose();
+      }
+
+      if(!result){
         if(!rp){
           const seen=[...state.peers.values()].filter(p=>p.online&&p.verified&&(p.models||[]).includes(choice.model));
-          throw new Error(`no route to selected model ${choice.model}${seen.length?` (${seen.length} signed route(s) present but not shareable)`:' (model advertisement is stale or provider disconnected)'}`);
+          throw new Error(`no usable mesh route for ${choice.model}${seen.length?` (${seen.length} signed route(s) present but not shareable)`:''}`);
         }
         $('#jobProgress').style.width='35%';
-        const res=await callRemote(rp[0],choice.model,prompt,choice.providerNode||rp[1]?.node,{
-          response_mode:responseMode,chunk_size:chunkSize,on_delta:onDelta
+        result=await runBrowserToolLoop({
+          messages,onDelta,onTool,reasoningMode,responseMode,chunkSize,
+          invoke:(msgs,ctx)=>callRemote(rp[0],choice.model,prompt,choice.providerNode||rp[1]?.node,{
+            messages:msgs,tools:ctx.tools,reasoning_mode:ctx.reasoning_mode,
+            response_mode:ctx.response_mode,chunk_size:ctx.chunk_size,on_delta:ctx.on_delta
+          })
         });
-        text=res.text;
-        meta=`AUTO→MESH · ${res.model||choice.model} · ${responseMode.toUpperCase()}${res.tps?` · ${formatTps(res.tps)}`:''}`;
+        meta=`${route==='mesh'?'MESH':'AUTO→MESH'} · ${result.model||choice.model} · ${responseMode.toUpperCase()} · REASON ${reasoningMode.toUpperCase()} · ${result.tool_history?.length||0} tools${result.tps?` · ${formatTps(result.tps)}`:''}`;
         state.lastRoute='mesh';
       }
     }
+
     $('#jobProgress').style.width='100%';
-    setMessageText(assistant,text||streamed);setMessageMeta(assistant,meta);assistant.classList.remove('streaming');
+    setMessageText(assistant,result.text||streamed||'');
+    setMessageMeta(assistant,meta);
+    assistant.classList.remove('streaming');
   }catch(e){
     assistant.remove();addMessage('system',`Inference failed: ${e.message}`,'error');log('err',`Inference failed: ${e.message}`);
   }finally{
@@ -3415,10 +3906,10 @@ const OIM_AGENT_MANIFEST={
   transport:['webrtc','nkn'],
   discovery:['nats','nostr','bittorrent','mqtt','waku','custom-ws','manual'],
   interfaces:['webmcp','window.OIM','postmessage','customevent','query-api'],
-  tools:['get_api_docs','get_state','list_models','scan_local','add_endpoint','join_mesh','leave_mesh','run_inference','accept_peer','deny_peer','set_peer_enabled','set_provider_policy','connect_nkn','set_rendezvous','issue_capability','import_capability','announce','create_manual_offer','answer_manual_offer','accept_manual_answer','get_deployment_guide']
+  tools:['get_api_docs','get_state','list_browser_tools','set_browser_tools','run_browser_tool','probe_endpoint_capabilities','list_models','scan_local','add_endpoint','join_mesh','leave_mesh','run_inference','accept_peer','deny_peer','set_peer_enabled','set_provider_policy','connect_nkn','set_rendezvous','issue_capability','import_capability','announce','create_manual_offer','answer_manual_offer','accept_manual_answer','get_deployment_guide']
 };
-function safeEndpointState(ep){return {url:ep.url,label:ep.label,status:ep.status,type:ep.type||null,latency_ms:ep.latency??null,models:[...(ep.models||[])],last_seen:ep.lastSeen||null,error:ep.error||null}}
-function agentSnapshot(){return {protocol:'open-inference-mesh',version:7,timestamp:now(),secure_context:window.isSecureContext,response_delivery:{default:state.responseMode||'stream',supported:['stream','chunked'],chunk_size:state.responseChunkSize||CONFIG.defaultChunkSize},node:{id:state.nodeId,identity_algorithm:state.identity?.alg||null,mesh_joined:state.joined,nkn_enabled:state.nknEnabled,nkn_status:state.nkn.status,nkn_address:state.nkn.addr||null},provider:{advertise:state.advertise,share:state.share,public_agent_gateway:state.agentPublicAccess,
+function safeEndpointState(ep){return {url:ep.url,label:ep.label,status:ep.status,type:ep.type||null,latency_ms:ep.latency??null,models:[...(ep.models||[])],capabilities:ep.capabilities?{status:ep.capabilities.status,tools_native:!!ep.capabilities.toolsNative,tools_mode:ep.capabilities.toolsNative?'native':'browser-prompt-fallback',reasoning_style:ep.capabilities.reasoningStyle||'server',probed_at:ep.capabilities.probedAt||null}:null,last_seen:ep.lastSeen||null,error:ep.error||null}}
+function agentSnapshot(){return {protocol:'open-inference-mesh',version:7,timestamp:now(),secure_context:window.isSecureContext,response_delivery:{default:state.responseMode||'stream',supported:['stream','chunked'],chunk_size:state.responseChunkSize||CONFIG.defaultChunkSize},reasoning:{mode:state.reasoningMode||'auto',endpoint_control:'auto-probed'},browser_tools:{enabled:state.toolsEnabled,max_rounds:state.toolMaxRounds,tools:browserToolState()},node:{id:state.nodeId,identity_algorithm:state.identity?.alg||null,mesh_joined:state.joined,nkn_enabled:state.nknEnabled,nkn_status:state.nkn.status,nkn_address:state.nkn.addr||null},provider:{advertise:state.advertise,share:state.share,public_agent_gateway:state.agentPublicAccess,
 tokens_per_second:Number(state.providerPerf.tpsEma)||0,last_sample_tokens_per_second:Number(state.providerPerf.lastTps)||0,
 performance_timestamp:Number(state.providerPerf.lastCompletedAt)||0,inference_active:state.activeRemoteJobs>0,access_mode:state.accessMode,served_models:state.serveModels,max_active:state.maxJobs,max_queue:state.maxQueue,peer_active_limit:state.perPeerConcurrent,peer_queue_limit:state.perPeerQueue,rpm_limit:state.rpmLimit,estimated_tpm_limit:state.tpmLimit,max_remote_output_tokens:state.maxRemoteTokens,queue_timeout_sec:state.queueTimeoutSec,active_jobs:state.activeRemoteJobs,queued_jobs:state.remoteQueue.length},endpoints:[...state.endpoints.values()].map(safeEndpointState),local_models:localModels().map(x=>({model:x.model,endpoint:x.endpoint,label:x.label})),remote_models:remoteModels().map(x=>{
   const peer=state.peers.get(x.peerId);
@@ -3458,14 +3949,15 @@ function chooseAgentModel(model,route='auto',providerNode=null){
 async function agentRunInference({
   prompt,model=null,route='auto',provider_node=null,
   max_tokens=CONFIG.defaultMaxTokens,temperature=0.7,
-  response_mode='stream',chunk_size=CONFIG.defaultChunkSize,on_chunk=null
+  response_mode='stream',chunk_size=CONFIG.defaultChunkSize,on_chunk=null,
+  tools=true,reasoning='auto',on_tool=null
 }={}){
   prompt=String(prompt||'').trim();
   if(!prompt)throw new Error('prompt required');
   if(prompt.length>CONFIG.maxPromptChars)throw new Error('prompt too large');
   if(!['auto','local','mesh'].includes(route))throw new Error('route must be auto, local, or mesh');
-
   response_mode=response_mode==='chunked'?'chunked':'stream';
+  reasoning=reasoningModeForRequest(reasoning);
   chunk_size=clamp(Number(chunk_size)||CONFIG.defaultChunkSize,32,4096);
 
   const emit=(delta,full,meta={})=>{
@@ -3473,35 +3965,54 @@ async function agentRunInference({
     if(typeof on_chunk==='function'){try{on_chunk(detail)}catch(_){}}
     window.dispatchEvent(new CustomEvent('oim:inference-chunk',{detail}));
   };
+  const toolEvent=entry=>{
+    if(typeof on_tool==='function'){try{on_tool(entry)}catch(_){}}
+    window.dispatchEvent(new CustomEvent('oim:inference-tool',{detail:entry}));
+  };
 
   const chosen=chooseAgentModel(model,route,provider_node);
   if(!chosen)throw new Error('no matching local or agent-open mesh model route');
   const t0=performance.now();
+  const messages=[{role:'user',content:prompt}];
 
+  let result;
   if(chosen.route==='local'){
-    const completion=await callOpenAI(chosen.endpoint,chosen.model,[{role:'user',content:prompt}],{
-      max_tokens:clamp(Number(max_tokens)||CONFIG.defaultMaxTokens,1,65536),
-      temperature:clamp(Number(temperature)||0.7,0,2),
-      response_mode,chunk_size,on_delta:emit,return_meta:true
+    result=await runBrowserToolLoop({
+      messages,onDelta:emit,onTool:toolEvent,useTools:tools!==false,
+      reasoningMode:reasoning,responseMode:response_mode,chunkSize:chunk_size,
+      invoke:(msgs,ctx)=>callOpenAI(chosen.endpoint,chosen.model,msgs,{
+        ...ctx,return_meta:true,max_tokens:clamp(Number(max_tokens)||CONFIG.defaultMaxTokens,1,65536),
+        temperature:clamp(Number(temperature)||0.7,0,2)
+      })
     });
-    return {ok:true,text:completion.text,route:'local',model:chosen.model,endpoint:chosen.endpoint,
-      response_mode,chunk_size:response_mode==='chunked'?chunk_size:null,usage:completion.usage||null,
-      latency_ms:Math.round(performance.now()-t0)};
+    return {
+      ok:true,text:result.text,route:'local',model:chosen.model,endpoint:chosen.endpoint,
+      response_mode,reasoning_mode:reasoning,tools_used:result.tool_history||[],
+      usage:result.usage||null,latency_ms:Math.round(performance.now()-t0)
+    };
   }
 
   const rp=chooseRemotePeer(chosen.model,provider_node||chosen.providerNode,{forAgent:true});
   if(!rp)throw new Error('no agent-open mesh provider is currently reachable for this model');
-  const res=await callRemote(rp[0],chosen.model,prompt,provider_node||chosen.providerNode||rp[1]?.node,{
-    agent:true,max_tokens:clamp(Number(max_tokens)||CONFIG.defaultMaxTokens,1,65536),
-    temperature:clamp(Number(temperature)||0.7,0,2),
-    response_mode,chunk_size,on_delta:emit
+  result=await runBrowserToolLoop({
+    messages,onDelta:emit,onTool:toolEvent,useTools:tools!==false,
+    reasoningMode:reasoning,responseMode:response_mode,chunkSize:chunk_size,
+    invoke:(msgs,ctx)=>callRemote(rp[0],chosen.model,prompt,provider_node||chosen.providerNode||rp[1]?.node,{
+      agent:true,messages:msgs,tools:ctx.tools,reasoning_mode:ctx.reasoning_mode,
+      max_tokens:clamp(Number(max_tokens)||CONFIG.defaultMaxTokens,1,65536),
+      temperature:clamp(Number(temperature)||0.7,0,2),
+      response_mode:ctx.response_mode,chunk_size:ctx.chunk_size,on_delta:ctx.on_delta
+    })
   });
-  return {ok:true,text:res.text,route:'mesh',model:res.model||chosen.model,
-    provider_node:res.node||chosen.providerNode||rp[1]?.node,
-    response_mode:res.response_mode||response_mode,chunk_size:res.chunk_size||null,
-    usage:res.usage||null,latency_ms:Math.round(performance.now()-t0),
-    worker_latency_ms:res.latency_ms||null,queue_ms:res.queue_ms||null,
-    tokens_per_second:Number(res.tps)||0};
+  return {
+    ok:true,text:result.text,route:'mesh',model:result.model||chosen.model,
+    provider_node:result.node||chosen.providerNode||rp[1]?.node,
+    response_mode,reasoning_mode:reasoning,reasoning_style:result.reasoning_style||null,
+    tools_used:result.tool_history||[],usage:result.usage||null,
+    latency_ms:Math.round(performance.now()-t0),
+    worker_latency_ms:result.latency_ms||null,queue_ms:result.queue_ms||null,
+    tokens_per_second:Number(result.tps)||0
+  };
 }
 
 async function agentSetProviderPolicy(params={}){for(const k of ['advertise','share'])if(params[k]!==undefined)state[k]=!!params[k];if(params.agent_public_access!==undefined)state.agentPublicAccess=!!params.agent_public_access;if(params.access_mode!==undefined){if(!['capability','allowlist','verified'].includes(params.access_mode))throw new Error('invalid access_mode');state.accessMode=params.access_mode}if(params.serve_models!==undefined)state.serveModels=String(params.serve_models||'*');for(const [arg,key,min,max] of [['max_active','maxJobs',1,32],['max_queue','maxQueue',0,256],['peer_active','perPeerConcurrent',1,16],['peer_queue','perPeerQueue',0,64],['rpm','rpmLimit',1,10000],['estimated_tpm','tpmLimit',256,10000000],['max_output_tokens','maxRemoteTokens',16,65536],['queue_timeout_sec','queueTimeoutSec',5,3600]])if(params[arg]!==undefined)state[key]=clamp(Number(params[arg])||min,min,max);persistPolicy();syncPolicyUI();scheduleAnnounce();processRemoteQueue();renderStatePanel();return agentSnapshot().provider}
@@ -3556,13 +4067,15 @@ function agentApiDocs(){
       docs:`${base}?api=docs`,
       state:`${base}?api=state`,
       models:`${base}?api=models`,
+      tools:`${base}?api=tools`,
+      tools_enable:`${base}?api=tools&enabled=1&names=oim_time,oim_calculate,wikipedia_search,open_meteo_weather`,
       join:`${base}?api=join`,
       bootstrap:`${base}?api=bootstrap&share=1&agent_public=1&models=*`,
       share:`${base}?api=share&enabled=1&agent_public=1&models=*`,
       infer:`${base}?api=infer&prompt=hello&route=auto&response_mode=stream`,
       infer_chunked:`${base}?api=infer&prompt=hello&route=auto&response_mode=chunked&chunk_size=256`,
       parameters:{
-        api:'docs | state | models | join | bootstrap | share | infer',
+        api:'docs | state | models | tools | join | bootstrap | share | infer',
         prompt:'required for infer',
         model:'optional exact model name',
         route:'auto | local | mesh',
@@ -3571,6 +4084,9 @@ function agentApiDocs(){
         temperature:'optional 0..2',
         response_mode:'stream (default) | chunked',
         chunk_size:'target characters per emitted chunk in chunked mode, default 256',
+        tools:'infer: 1/0 to enable/disable the browser tool broker for that request',
+        reasoning:'infer: auto | on | off; endpoint-specific request fields are auto-probed',
+        names:'tools action: comma-separated tool names to enable',
         enabled:'share action, 0 or 1',
         agent_public:'share action, 0 or 1',
         models:'share action, * or comma-separated model names',
@@ -3582,6 +4098,20 @@ function agentApiDocs(){
       modes:{stream:'Forward generation deltas immediately.',chunked:'Buffer deltas into larger frames before forwarding.'},
       browser_event:'oim:inference-chunk',
       javascript_callback:'window.OIM.infer(prompt,{on_chunk: chunk => ...})'
+    },
+    browser_tool_broker:{
+      execution_location:'requesting browser monolith',
+      remote_provider_behavior:'Remote inference providers receive tool schemas and generate tool calls, but never execute browser tools. Tool calls return to the requester, execute there, and tool results are sent back for the next model turn.',
+      defaults:browserToolState(),
+      native_compatibility:'OpenAI-style function calling is used when endpoint probing accepts tools/tool_choice.',
+      fallback_compatibility:'Endpoints without native tool calling receive a constrained <tool_call> text protocol which the browser parses and executes.',
+      safety:'Built-in public_fetch blocks loopback/private/LAN destinations and omits credentials. Browser CORS remains enforced.',
+      extension:'window.OIM.registerTool({name, description, parameters, execute})'
+    },
+    reasoning_control:{
+      modes:['auto','on','off'],
+      probing:['reasoning_effort','chat_template_kwargs.enable_thinking','server/default'],
+      behavior:'AUTO preserves endpoint/model defaults. ON/OFF only sends a request override when probing indicates a compatible request-level mechanism.'
     },
     provider_behavior:{
       local_first:true,
@@ -3611,7 +4141,25 @@ function agentApiDocs(){
   };
 }
 
-const OIM_RPC_METHODS={get_api_docs:async()=>agentApiDocs(),get_state:async()=>agentSnapshot(),list_models:async()=>listAgentModels(),scan_local:async()=>{await scanCommon();return {ok:true,endpoints:[...state.endpoints.values()].map(safeEndpointState)}},add_endpoint:async({url,label='agent',api_key=''}={})=>{const ep=await probeEndpoint(normalizeBaseUrl(String(url||'')),String(label||'agent'),String(api_key||''));if(!ep)throw new Error('endpoint unreachable');return safeEndpointState(ep)},join_mesh:async()=>{await joinMesh();return {ok:state.joined}},leave_mesh:async()=>{leaveMesh();return {ok:true}},run_inference:agentRunInference,
+
+async function agentSetBrowserTools({enabled,names,max_rounds}={}){
+  if(enabled!==undefined)state.toolsEnabled=!!enabled;
+  if(Array.isArray(names)){
+    const catalog=browserToolCatalog();
+    state.enabledBrowserTools=new Set(names.map(String).filter(n=>catalog[n]));
+  }
+  if(max_rounds!==undefined)state.toolMaxRounds=clamp(Number(max_rounds)||6,1,12);
+  persistPolicy();syncPolicyUI();renderBrowserTools();
+  return {enabled:state.toolsEnabled,max_rounds:state.toolMaxRounds,tools:browserToolState()};
+}
+async function agentRunBrowserTool({name,arguments:args={}}={}){
+  name=String(name||'');
+  if(!name)throw new Error('tool name required');
+  const call={id:`call_${uuid().replaceAll('-','').slice(0,16)}`,type:'function',function:{name,arguments:typeof args==='string'?args:JSON.stringify(args||{})}};
+  return executeBrowserToolCall(call);
+}
+
+const OIM_RPC_METHODS={get_api_docs:async()=>agentApiDocs(),get_state:async()=>agentSnapshot(),list_browser_tools:async()=>({enabled:state.toolsEnabled,max_rounds:state.toolMaxRounds,tools:browserToolState()}),set_browser_tools:agentSetBrowserTools,run_browser_tool:agentRunBrowserTool,probe_endpoint_capabilities:async()=>{await probeAllEndpointCapabilities(true);return [...state.endpoints.values()].map(safeEndpointState)},list_models:async()=>listAgentModels(),scan_local:async()=>{await scanCommon();return {ok:true,endpoints:[...state.endpoints.values()].map(safeEndpointState)}},add_endpoint:async({url,label='agent',api_key=''}={})=>{const ep=await probeEndpoint(normalizeBaseUrl(String(url||'')),String(label||'agent'),String(api_key||''));if(!ep)throw new Error('endpoint unreachable');return safeEndpointState(ep)},join_mesh:async()=>{await joinMesh();return {ok:state.joined}},leave_mesh:async()=>{leaveMesh();return {ok:true}},run_inference:agentRunInference,
   accept_peer:async({node}={})=>{if(!node)throw new Error('node required');await acceptPeer(String(node));return {ok:true,node,decision:'accepted',enabled:true}},
   deny_peer:async({node}={})=>{if(!node)throw new Error('node required');denyPeer(String(node));return {ok:true,node,decision:'denied'}},
   set_peer_enabled:async({node,enabled}={})=>{if(!node)throw new Error('node required');if(!state.peerAccepted.has(String(node)))throw new Error('peer must be accepted first');if(enabled)state.peerEnabled.add(String(node));else state.peerEnabled.delete(String(node));persistPolicy();renderPeers();return {ok:true,node,enabled:nodeIsEnabled(String(node))}},
@@ -3626,6 +4174,11 @@ window.OIM=Object.freeze({
   docs:()=>agentApiDocs(),
   models:()=>listAgentModels(),
   state:()=>agentSnapshot(),
+  tools:()=>({enabled:state.toolsEnabled,max_rounds:state.toolMaxRounds,tools:browserToolState()}),
+  setTools:(options={})=>agentSetBrowserTools(options),
+  runTool:(name,args={})=>agentRunBrowserTool({name,arguments:args}),
+  registerTool:spec=>registerBrowserTool(spec),
+  probeCapabilities:()=>probeAllEndpointCapabilities(true),
   join:()=>oimCall('join_mesh',{}),
   bootstrap:async(options={})=>{
     await oimCall('join_mesh',{});
@@ -3654,14 +4207,20 @@ async function registerWebMcpTools(){const mc=document.modelContext,status=$('#a
   const specs=[
     {name:'oim_get_api_docs',description:'Return machine-readable documentation for the Open Inference Mesh browser API, query-parameter API, routing behavior, and security boundaries.',inputSchema:{type:'object',properties:{}},annotations:{readOnlyHint:true},execute:async()=>JSON.stringify(agentApiDocs())},
     {name:'oim_get_state',description:'Read complete Open Inference Mesh node state without secrets. Use before changing anything.',inputSchema:{type:'object',properties:{}},annotations:{readOnlyHint:true},execute:async()=>JSON.stringify(agentSnapshot())},
+    {name:'oim_list_browser_tools',description:'List the browser-side tools that inference models can call through this monolith.',inputSchema:{type:'object',properties:{}},annotations:{readOnlyHint:true},execute:async()=>JSON.stringify(await oimCall('list_browser_tools'))},
+    {name:'oim_set_browser_tools',description:'Enable/disable the browser tool broker, select enabled tools, or change the maximum tool-call rounds.',inputSchema:{type:'object',properties:{enabled:{type:'boolean'},names:{type:'array',items:{type:'string'}},max_rounds:{type:'integer',minimum:1,maximum:12}}},annotations:{readOnlyHint:false},execute:async args=>JSON.stringify(await oimCall('set_browser_tools',args))},
+    {name:'oim_run_browser_tool',description:'Execute one enabled browser tool directly. Tool execution occurs in this browser and returns structured output.',inputSchema:{type:'object',properties:{name:{type:'string'},arguments:{type:'object'}},required:['name']},annotations:{readOnlyHint:false},execute:async args=>JSON.stringify(await oimCall('run_browser_tool',args))},
+    {name:'oim_probe_endpoint_capabilities',description:'Re-probe connected inference endpoints for native tool calling and request-level reasoning controls.',inputSchema:{type:'object',properties:{}},annotations:{readOnlyHint:false},execute:async()=>JSON.stringify(await oimCall('probe_endpoint_capabilities'))},
     {name:'oim_list_models',description:'List currently available local and mesh model routes.',inputSchema:{type:'object',properties:{}},annotations:{readOnlyHint:true},execute:async()=>JSON.stringify(listAgentModels())},
     {name:'oim_scan_local',description:'Probe standard local inference ports. May trigger browser local-network permission.',inputSchema:{type:'object',properties:{}},annotations:{readOnlyHint:false},execute:async()=>JSON.stringify(await oimCall('scan_local'))},
     {name:'oim_add_endpoint',description:'Add and probe an OpenAI-compatible or Ollama endpoint. API key remains local to this page.',inputSchema:{type:'object',properties:{url:{type:'string'},label:{type:'string'},api_key:{type:'string'}},required:['url']},annotations:{readOnlyHint:false},execute:async args=>JSON.stringify(await oimCall('add_endpoint',args))},
     {name:'oim_join_mesh',description:'Join enabled WebRTC discovery planes and NKN fallback overlay.',inputSchema:{type:'object',properties:{}},annotations:{readOnlyHint:false},execute:async()=>JSON.stringify(await oimCall('join_mesh'))},
     {name:'oim_leave_mesh',description:'Leave public mesh. Local inference remains available.',inputSchema:{type:'object',properties:{}},annotations:{readOnlyHint:false},execute:async()=>JSON.stringify(await oimCall('leave_mesh'))},
-    {name:'oim_run_inference',description:'Run text inference. AUTO prefers locally owned inference then mesh. No arbitrary shell/tool execution.',inputSchema:{type:'object',properties:{prompt:{type:'string'},model:{type:'string'},route:{type:'string',enum:['auto','local','mesh']},provider_node:{type:'string'},max_tokens:{type:'integer',minimum:1,maximum:65536},temperature:{type:'number',minimum:0,maximum:2},
+    {name:'oim_run_inference',description:'Run inference with browser-brokered tools. AUTO prefers local inference then agent-open mesh providers; tool calls always execute in the requesting browser.',inputSchema:{type:'object',properties:{prompt:{type:'string'},model:{type:'string'},route:{type:'string',enum:['auto','local','mesh']},provider_node:{type:'string'},max_tokens:{type:'integer',minimum:1,maximum:65536},temperature:{type:'number',minimum:0,maximum:2},
         response_mode:{type:'string',enum:['stream','chunked'],description:'stream is default; chunked emits larger buffered frames'},
-        chunk_size:{type:'integer',minimum:32,maximum:4096,description:'target characters per chunk in chunked mode'}},required:['prompt']},annotations:{readOnlyHint:false,untrustedContentHint:true},execute:async args=>JSON.stringify(await oimCall('run_inference',args))},
+        chunk_size:{type:'integer',minimum:32,maximum:4096,description:'target characters per chunk in chunked mode'},
+        tools:{type:'boolean',description:'Enable browser-brokered tool calls for this inference request; default true'},
+        reasoning:{type:'string',enum:['auto','on','off'],description:'Reasoning override. AUTO preserves endpoint/model default; ON/OFF use auto-probed endpoint controls.'}},required:['prompt']},annotations:{readOnlyHint:false,untrustedContentHint:true},execute:async args=>JSON.stringify(await oimCall('run_inference',args))},
     {name:'oim_accept_peer',description:'Accept a discovered signed peer and enable inference access for it.',inputSchema:{type:'object',properties:{node:{type:'string'}},required:['node']},annotations:{readOnlyHint:false},execute:async args=>JSON.stringify(await oimCall('accept_peer',args))},
     {name:'oim_deny_peer',description:'Deny a signed peer. Denied peers cannot consume this provider and are hidden from remote model routing.',inputSchema:{type:'object',properties:{node:{type:'string'}},required:['node']},annotations:{readOnlyHint:false},execute:async args=>JSON.stringify(await oimCall('deny_peer',args))},
     {name:'oim_set_peer_enabled',description:'Enable or disable inference for an already accepted peer without forgetting the trust decision.',inputSchema:{type:'object',properties:{node:{type:'string'},enabled:{type:'boolean'}},required:['node','enabled']},annotations:{readOnlyHint:false},execute:async args=>JSON.stringify(await oimCall('set_peer_enabled',args))},
@@ -3703,6 +4262,18 @@ $('#agentPublicToggle').onclick=()=>{
   persistPolicy();scheduleAnnounce();updateShareSummary();
   log('info',`Public agent gateway ${state.agentPublicAccess?'enabled':'disabled'}.`);
 };
+$('#toolsMasterToggle').onclick=()=>{
+  state.toolsEnabled=!state.toolsEnabled;toggleButton($('#toolsMasterToggle'),state.toolsEnabled);persistPolicy();renderBrowserTools();emitAgentState?.();
+};
+const syncReasoningMode=v=>{
+  state.reasoningMode=reasoningModeForRequest(v);persistPolicy();
+  if($('#reasoningModeSelect'))$('#reasoningModeSelect').value=state.reasoningMode;
+  if($('#reasoningModeSide'))$('#reasoningModeSide').value=state.reasoningMode;
+};
+$('#reasoningModeSelect').onchange=()=>syncReasoningMode($('#reasoningModeSelect').value);
+$('#reasoningModeSide').onchange=()=>syncReasoningMode($('#reasoningModeSide').value);
+$('#toolMaxRounds').onchange=()=>{state.toolMaxRounds=clamp(Number($('#toolMaxRounds').value)||6,1,12);persistPolicy()};
+$('#probeCapsBtn').onclick=async()=>{const b=$('#probeCapsBtn');b.disabled=true;await probeAllEndpointCapabilities(true);b.disabled=false};
 $('#responseModeSelect').onchange=()=>{
   state.responseMode=$('#responseModeSelect').value==='chunked'?'chunked':'stream';
   persistPolicy();
@@ -3850,6 +4421,15 @@ async function handleQueryApi(qp){
       if(qp.get('join')!=='0'&&!state.joined){await joinMesh();await sleep(Math.max(300,Number(qp.get('settle_ms'))||1500));}
       return setApiResponse({ok:true,result:listAgentModels()});
     }
+    if(action==='tools'){
+      const bool=v=>v==null?undefined:!['0','false','off','no'].includes(String(v).toLowerCase());
+      if(qp.has('enabled')||qp.has('names')||qp.has('max_rounds')){
+        const names=qp.has('names')?qp.get('names').split(',').map(x=>x.trim()).filter(Boolean):undefined;
+        const result=await agentSetBrowserTools({enabled:bool(qp.get('enabled')),names,max_rounds:qp.has('max_rounds')?Number(qp.get('max_rounds')):undefined});
+        return setApiResponse({ok:true,result});
+      }
+      return setApiResponse({ok:true,result:{enabled:state.toolsEnabled,max_rounds:state.toolMaxRounds,tools:browserToolState()}});
+    }
     if(action==='join'){
       await joinMesh();
       return setApiResponse({ok:state.joined,result:{joined:state.joined,state:agentSnapshot().discovery}});
@@ -3896,10 +4476,12 @@ async function handleQueryApi(qp){
       const temperature=clamp(Number(qp.get('temperature'))||0.7,0,2);
       const response_mode=qp.get('response_mode')==='chunked'?'chunked':'stream';
       const chunk_size=clamp(Number(qp.get('chunk_size'))||CONFIG.defaultChunkSize,32,4096);
+      const tools=!qp.has('tools')||!['0','false','off','no'].includes(String(qp.get('tools')).toLowerCase());
+      const reasoning=reasoningModeForRequest(qp.get('reasoning')||state.reasoningMode);
       if(!state.joined&&route!=='local')await joinMesh();
       const ready=await waitForAgentRoute(model,route,Number(qp.get('wait_ms'))||30000);
       if(!ready)return setApiResponse({ok:false,error:'No usable local or agent-open mesh route became available before timeout',route,model},503);
-      const result=await agentRunInference({prompt,model,route,provider_node,max_tokens,temperature,response_mode,chunk_size});
+      const result=await agentRunInference({prompt,model,route,provider_node,max_tokens,temperature,response_mode,chunk_size,tools,reasoning});
       return setApiResponse({ok:true,result});
     }
     return setApiResponse({ok:false,error:`unknown api action: ${action}`,docs:agentApiDocs().url_api},400);
@@ -3918,6 +4500,7 @@ async function handleQueryApi(qp){
   $('#nknRpcInput').value=localStorage.getItem('oim.nknRpc')||'';
   $('#natsServers').value=localStorage.getItem('oim.natsServers')||'wss://demo.nats.io:8443';
   syncPolicyUI();
+  renderBrowserTools();
   await checkPermissions();
   renderEndpoints();renderPeerOffers();renderPeers();refreshModelSelect();renderStatePanel();updateShareSummary();
   resizeCanvas();updateStats();
