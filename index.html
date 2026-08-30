@@ -7,7 +7,7 @@
 <meta name="description" content="Open Inference Mesh: a static-hostable, local-first peer-to-peer intelligence commons. People and agents can discover shared inference, use it within provider limits, and voluntarily contribute locally owned models so useful machine intelligence becomes broadly accessible rather than dependent on a single institution.">
 <meta name="robots" content="index,follow">
 <meta name="application-name" content="Open Inference Mesh">
-<meta name="oim-protocol" content="open-inference-mesh-v7.19">
+<meta name="oim-protocol" content="open-inference-mesh-v7.20">
 <meta name="agent-interface" content="WebMCP, window.OIM, same-origin postMessage RPC, CustomEvent RPC">
 <link rel="help" href="?api=docs" title="Open Inference Mesh machine API documentation">
 <link rel="alternate" type="application/json" href="?api=docs" title="OIM agent API">
@@ -1283,6 +1283,9 @@ const state = {
   nknSendChains: new Map(),
   nknTxStats:{messages:0,chunks:0,deltaFrames:0,deltaChars:0},
   streamDiag:{txDeltas:0,txChars:0,rxDeltas:0,rxChars:0,lastTxAt:0,lastRxAt:0},
+  streamFrames:new Map(),      // route+job -> coalesced outbound delta frame
+  streamFrameMs:45,
+  streamFrameChars:192,
   lanPermission:{
     autoAttempted:false,gestureRetryArmed:false,inFlight:null,lastAttemptAt:0,
     loopback:'unknown',local:'unknown'
@@ -4224,11 +4227,40 @@ function waitIceGathering(pc,timeoutMs=7000){
     pc.addEventListener('icegatheringstatechange',onChange);
   });
 }
+async function waitForDataChannelWritable(dc,{highWater=512*1024,timeoutMs=5000}={}){
+  if(!dc||dc.readyState!=='open')throw new Error('WebRTC route is not open');
+  if(Number(dc.bufferedAmount||0)<highWater)return;
+  const low=Math.max(64*1024,Math.floor(highWater/4));
+  try{dc.bufferedAmountLowThreshold=low}catch(_){}
+  await new Promise((resolve,reject)=>{
+    let done=false;
+    const finish=(fn,val)=>{
+      if(done)return;done=true;
+      clearTimeout(timer);
+      try{dc.removeEventListener('bufferedamountlow',onLow)}catch(_){}
+      fn(val);
+    };
+    const onLow=()=>finish(resolve);
+    const timer=setTimeout(()=>finish(reject,new Error('WebRTC send backpressure timeout')),timeoutMs);
+    try{dc.addEventListener('bufferedamountlow',onLow,{once:true})}catch(_){}
+    if(Number(dc.bufferedAmount||0)<=low)finish(resolve);
+  });
+}
 function makeManualAction(wrapper,name){
   const action={onMessage:null};
-  action.send=async(data)=>{
-    if(wrapper.dc.readyState!=='open')throw new Error('manual WebRTC route is not open');
-    wrapper.dc.send(JSON.stringify({v:1,a:name,d:data}));
+  action.send=(data)=>{
+    const task=async()=>{
+      if(wrapper.dc.readyState!=='open')throw new Error('manual WebRTC route is not open');
+      const raw=JSON.stringify({v:1,a:name,d:data});
+      await waitForDataChannelWritable(wrapper.dc);
+      wrapper.dc.send(raw);
+    };
+    // Ordered RTC channel + serialized local sender prevents a token burst from
+    // overflowing bufferedAmount and starving result/state packets.
+    const prev=wrapper._sendChain||Promise.resolve();
+    const next=prev.then(task,task);
+    wrapper._sendChain=next.catch(()=>{});
+    return next;
   };
   return action;
 }
@@ -4727,21 +4759,67 @@ function sendJobState(wrapper,peerId,id,status,extra={}){
   };
   for(const t of replayTargets(id))t.wrapper.actions.state.send(payload,{target:t.peerId}).catch(()=>{});
 }
+async function flushStreamFrameKey(key){
+  const rec=state.streamFrames.get(key);
+  if(!rec)return;
+  state.streamFrames.delete(key);
+  if(rec.timer)clearTimeout(rec.timer);
+  if(!rec.delta)return;
+
+  const packet={
+    id:rec.id,delta:rec.delta,seq:rec.seq,mode:rec.mode||'stream',
+    kind:'content',ts:now()
+  };
+  state.streamDiag.txDeltas++;
+  state.streamDiag.txChars+=rec.delta.length;
+  state.streamDiag.lastTxAt=now();
+
+  try{
+    await rec.wrapper.actions.delta.send(packet,{target:rec.peerId});
+  }catch(_){}
+}
+function queueStreamFrame(wrapper,peerId,id,payload){
+  const routeKey=String(wrapper?.key||wrapper?.strategy||'route');
+  const key=`${routeKey}|${peerId}|${id}`;
+  let rec=state.streamFrames.get(key);
+  if(!rec){
+    rec={
+      key,wrapper,peerId,id,delta:'',seq:Number(payload?.seq)||0,
+      mode:payload?.mode||'stream',timer:null,createdAt:now()
+    };
+    state.streamFrames.set(key,rec);
+  }
+  rec.delta+=String(payload?.delta||'');
+  rec.seq=Number(payload?.seq)||rec.seq;
+  rec.mode=payload?.mode||rec.mode;
+
+  if(rec.delta.length>=state.streamFrameChars){
+    return flushStreamFrameKey(key);
+  }
+  if(!rec.timer){
+    rec.timer=setTimeout(()=>flushStreamFrameKey(key).catch(()=>{}),state.streamFrameMs);
+  }
+  return Promise.resolve();
+}
+async function flushJobStreamFrames(id){
+  const jobs=[];
+  for(const [key,rec] of [...state.streamFrames]){
+    if(rec.id===id)jobs.push(flushStreamFrameKey(key));
+  }
+  await Promise.allSettled(jobs);
+}
 function sendJobDelta(wrapper,peerId,id,payload){
   registerJobWatcher(id,wrapper,peerId);
-  state.streamDiag.txDeltas++;
-  state.streamDiag.txChars+=String(payload?.delta||'').length;
-  state.streamDiag.lastTxAt=now();
-  const targets=replayTargets(id);
-  // Never block model generation on stale/reconnecting replay routes.
-  for(const t of targets){
-    Promise.resolve(
-      t.wrapper.actions.delta.send({id,...payload},{target:t.peerId})
-    ).catch(()=>{});
+  // Token-sized packets are pathological on RTC/relay transports. Coalesce to
+  // ~45 ms / 192-char frames while keeping decode fully non-blocking.
+  for(const t of replayTargets(id)){
+    queueStreamFrame(t.wrapper,t.peerId,id,payload).catch(()=>{});
   }
 }
 async function sendJobResult(wrapper,peerId,result,status=null){
   const id=result?.id;if(!id)return;
+  // Drain any coalesced content before the final result frame.
+  await flushJobStreamFrames(id);
   const rec=registerJobWatcher(id,wrapper,peerId);
   rec.result=result;rec.status=status||(result.ok?'complete':'failed');rec.ts=now();
 
@@ -4868,29 +4946,54 @@ async function executeRemoteJob(job){
     const responseMode=data.response_mode==='chunked'?'chunked':'stream';
     const chunkSize=clamp(Number(data.chunk_size)||CONFIG.defaultChunkSize,32,4096);
     let seq=0,reasoningProgressAt=0;
-    const completion=await callLocalProvider(auth.match,auth.messages,{
-      temperature:clamp(Number(data.temperature)||0.7,0,2),
-      max_tokens:auth.maxTokens,return_meta:true,
-      tools:auth.tools,
-      reasoning_mode:reasoningModeForRequest(data.reasoning_mode||'auto'),
-      response_mode:responseMode,chunk_size:chunkSize,
-      on_delta:delta=>{
-        updateServingTelemetry(peerMeta.node,delta);
-        sendJobDelta(wrapper,peerId,data.id,{delta,seq:seq++,mode:responseMode,kind:'content',ts:now()});
-      },
-      on_reasoning_delta:(delta,full)=>{
-        // Qwen/DeepSeek-style reasoning may precede visible answer content.
-        // Report liveness at most ~1.3 Hz; never one control packet per token.
-        const t=now();
-        if(t-reasoningProgressAt>=750){
-          reasoningProgressAt=t;
-          sendJobState(wrapper,peerId,data.id,'reasoning',{
-            reasoning_chars:String(full||'').length,
-            reasoning_delta_chars:String(delta||'').length
-          });
+    let completion;
+    try{
+      completion=await callLocalProvider(auth.match,auth.messages,{
+        temperature:clamp(Number(data.temperature)||0.7,0,2),
+        max_tokens:auth.maxTokens,return_meta:true,
+        tools:auth.tools,
+        reasoning_mode:reasoningModeForRequest(data.reasoning_mode||'auto'),
+        response_mode:responseMode,chunk_size:chunkSize,
+        on_delta:delta=>{
+          updateServingTelemetry(peerMeta.node,delta);
+          sendJobDelta(wrapper,peerId,data.id,{delta,seq:seq++,mode:responseMode,kind:'content',ts:now()});
+        },
+        on_reasoning_delta:(delta,full)=>{
+          const t=now();
+          if(t-reasoningProgressAt>=750){
+            reasoningProgressAt=t;
+            sendJobState(wrapper,peerId,data.id,'reasoning',{
+              reasoning_chars:String(full||'').length,
+              reasoning_delta_chars:String(delta||'').length
+            });
+          }
         }
+      });
+    }catch(primaryErr){
+      if(!shouldUseLegacyProviderFallback(primaryErr))throw primaryErr;
+
+      log('warn',`Streaming provider path failed (${String(primaryErr.message||primaryErr).slice(0,140)}); retrying f912 compatibility request.`);
+      sendJobState(wrapper,peerId,data.id,'compat-retry',{
+        error:String(primaryErr.message||primaryErr).slice(0,180)
+      });
+
+      completion=await callOpenAILegacyCompat(
+        auth.match.endpoint,auth.match.model,auth.prompt,{
+          temperature:clamp(Number(data.temperature)||0.7,0,2),
+          max_tokens:auth.maxTokens
+        }
+      );
+
+      // Compatibility path produces a final response rather than live backend
+      // tokens. Emit one content frame before result so requester rendering and
+      // transcript behavior remain identical.
+      if(completion.text){
+        updateServingTelemetry(peerMeta.node,completion.text);
+        sendJobDelta(wrapper,peerId,data.id,{
+          delta:completion.text,seq:seq++,mode:'compat',kind:'content',ts:now()
+        });
       }
-    });
+    }
     const latencyMs=Math.max(1,Math.round(performance.now()-t0));
     const outputTokens=completion.completion_tokens||estimateTextTokens(completion.text);
     const inputTokens=Number(completion.prompt_tokens||completion.usage?.prompt_tokens)||Math.max(1,Math.ceil(JSON.stringify(auth.messages||[]).length/4));
@@ -4918,7 +5021,8 @@ async function executeRemoteJob(job){
       reasoning_style:completion.reasoning_style||'server',
       response_mode:responseMode,
       chunk_size:responseMode==='chunked'?chunkSize:null,
-      queue_ms:Math.max(0,(job.started||now())-(job.enqueued||now()))
+      queue_ms:Math.max(0,(job.started||now())-(job.enqueued||now())),
+      compatibility_fallback:!!completion.compat_fallback
     });
     sendJobState(wrapper,peerId,data.id,'complete');
     finishServingTelemetry(peerMeta.node,{ok:true,tps:sampleTps,model:auth.match.model,jobId:data.id});
@@ -4984,6 +5088,9 @@ function handleRemoteState(data,meta,wrapper){
     p.lastStateAt=now();
     if(data.status==='queued')log('info',`Remote job ${data.id.slice(0,8)} queued at position ${data.position||'?'}.`);
     if(data.status==='running')log('info',`Remote job ${data.id.slice(0,8)} is running.`);
+    if(data.status==='compat-retry'){
+      log('warn',`Remote job ${data.id.slice(0,8)} switched to known-good compatibility inference path.`);
+    }
     if(data.status==='reasoning'){
       p.reasoningChars=Number(data.reasoning_chars)||p.reasoningChars||0;
       if(now()-Number(p.lastReasoningLogAt||0)>5000){
@@ -5122,6 +5229,12 @@ function cleanupPeers(){
   for(const [key,c] of state.nknChunks)if(now()-c.ts>120_000)state.nknChunks.delete(key);
   for(const [addr,ts] of state.nknHelloAt)if(now()-ts>10*60_000)state.nknHelloAt.delete(addr);
   for(const [key,ts] of state.nknLogGate)if(now()-ts>10*60_000)state.nknLogGate.delete(key);
+  for(const [key,rec] of [...state.streamFrames]){
+    if(now()-Number(rec?.createdAt||rec?.ts||0)>120_000){
+      if(rec?.timer)clearTimeout(rec.timer);
+      state.streamFrames.delete(key);
+    }
+  }
   for(const [nonce,ts] of state.nats.signalSeen)if(now()-ts>CONFIG.natsSignalMaxAgeMs*2)state.nats.signalSeen.delete(nonce);
   for(const [node,c] of [...state.nats.candidates])if(c.expires<now())state.nats.candidates.delete(node);
   for(const [id,arr] of state.ingressUsage){const fresh=arr.filter(t=>t>now()-60_000);if(fresh.length)state.ingressUsage.set(id,fresh);else state.ingressUsage.delete(id)}
@@ -5994,6 +6107,58 @@ async function callOpenAI(endpointUrl,model,messages,extra={}){
   return full;
 }
 
+
+async function callOpenAILegacyCompat(endpointUrl,model,prompt,extra={}){
+  const ep=state.endpoints.get(endpointUrl);
+  if(!ep||ep.status!=='up')throw new Error('endpoint is not online');
+
+  const headers={'Content-Type':'application/json','Accept':'application/json'};
+  if(ep.apiKey)headers['Authorization']=`Bearer ${ep.apiKey}`;
+
+  // Intentionally mirrors the known-good f91238d provider request:
+  // one user prompt, stream:false, no tool/reasoning extensions.
+  const payload={
+    model,
+    messages:[{role:'user',content:String(prompt||'')}],
+    stream:false,
+    temperature:extra.temperature??0.7,
+    max_tokens:extra.max_tokens??CONFIG.defaultMaxTokens
+  };
+
+  const ctrl=new AbortController();
+  const timer=setTimeout(()=>ctrl.abort(),180_000);
+  let res;
+  try{
+    res=await fetch(`${endpointUrl}/v1/chat/completions`,{
+      ...fetchOptsFor(endpointUrl,{
+        method:'POST',headers,body:JSON.stringify(payload)
+      }),
+      signal:ctrl.signal
+    });
+  }finally{clearTimeout(timer)}
+
+  if(!res.ok){
+    let body='';try{body=(await res.text()).slice(0,500)}catch(_){}
+    throw new Error(`legacy inference HTTP ${res.status}${body?': '+body:''}`);
+  }
+  const data=await res.json();
+  const content=data.choices?.[0]?.message?.content ?? data.choices?.[0]?.text;
+  if(content==null)throw new Error('legacy response contained no text choice');
+  const text=typeof content==='string'?content:JSON.stringify(content);
+  return {
+    text,tool_calls:[],usage:data.usage||null,
+    completion_tokens:Number(data.usage?.completion_tokens)||estimateTextTokens(text),
+    prompt_tokens:Number(data.usage?.prompt_tokens)||estimateTextTokens(prompt),
+    total_tokens:Number(data.usage?.total_tokens)||0,
+    reasoning:null,tools_mode:'compat',reasoning_mode:'off',
+    reasoning_style:'compat',compat_fallback:true
+  };
+}
+function shouldUseLegacyProviderFallback(err){
+  const msg=String(err?.message||err||'').toLowerCase();
+  return /failed to fetch|local inference fetch failed|oim_local_fetch_failed|networkerror|network error|streaming response has no readable body|stream completed without text or tool calls/.test(msg);
+}
+
 function routeTransportConnected(routeId){
   const p=state.peers.get(routeId);
   if(!p)return false;
@@ -6244,17 +6409,19 @@ async function callRemote(peerId,model,prompt,providerNode=null,requestMeta={}){
       }catch(e){
         lastErr=e;
         if(/merit budget exhausted/i.test(String(e?.message||e)))throw e;
-        markRouteSuspect(routeId,e?.message||e);
-        log('warn',`Route ${routeId.slice(0,8)} for ${node.slice(0,10)} failed (${String(e?.message||e).slice(0,120)}); trying another healthy route/provider.`);
         const emsg=String(e?.message||e).toLowerCase();
-        if(/failed to fetch|local inference fetch failed|oim_local_fetch_failed/.test(emsg)){
-          // Request reached this peer, but its browser could not reach its local
-          // inference backend. Prefer a different provider while its LNA/backend
-          // state recovers.
+        const backendFailure=/failed to fetch|local inference fetch failed|oim_local_fetch_failed|legacy inference http/.test(emsg);
+
+        if(backendFailure){
+          // The request/response mesh route itself worked; the provider reported
+          // that its LOCAL inference backend failed. Do not poison or flicker
+          // the peer transport. Quarantine only this provider for routing.
           failedUntil.set(node,now()+10_000);
-        }else if(!isRecoverableMeshError(e)){
-          // Policy/model errors can still be served by a different provider of the same model.
-          failedUntil.set(node,now()+4000);
+          log('warn',`Provider ${node.slice(0,10)} backend unavailable (${String(e?.message||e).slice(0,140)}); trying another ${model} provider.`);
+        }else{
+          markRouteSuspect(routeId,e?.message||e);
+          log('warn',`Route ${routeId.slice(0,8)} for ${node.slice(0,10)} failed (${String(e?.message||e).slice(0,120)}); trying another healthy route/provider.`);
+          if(!isRecoverableMeshError(e))failedUntil.set(node,now()+4000);
         }
       }
     }
