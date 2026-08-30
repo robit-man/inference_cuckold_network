@@ -7,7 +7,7 @@
 <meta name="description" content="Open Inference Mesh: a static-hostable, local-first peer-to-peer intelligence commons. People and agents can discover shared inference, use it within provider limits, and voluntarily contribute locally owned models so useful machine intelligence becomes broadly accessible rather than dependent on a single institution.">
 <meta name="robots" content="index,follow">
 <meta name="application-name" content="Open Inference Mesh">
-<meta name="oim-protocol" content="open-inference-mesh-v7.24">
+<meta name="oim-protocol" content="open-inference-mesh-v7.25">
 <meta name="agent-interface" content="WebMCP, window.OIM, same-origin postMessage RPC, CustomEvent RPC">
 <link rel="help" href="?api=docs" title="Open Inference Mesh machine API documentation">
 <link rel="alternate" type="application/json" href="?api=docs" title="OIM agent API">
@@ -2824,7 +2824,8 @@ function fetchOptsFor(url, extra={}){
 async function fetchTimeout(url, opts={}, timeout=4500){
   const {__oimLanRetried=false,...fetchOpts}=opts||{};
   const ctrl=new AbortController();
-  const t=setTimeout(()=>ctrl.abort(),timeout);
+  let timedOut=false;
+  const t=setTimeout(()=>{timedOut=true;ctrl.abort()},timeout);
   try{
     return await fetch(url,{...fetchOpts,signal:ctrl.signal});
   }catch(e){
@@ -2842,6 +2843,12 @@ async function fetchTimeout(url, opts={}, timeout=4500){
       const permission=space==='loopback'?states.loopback:states.local;
       const err=new Error(`local inference fetch failed (${space} permission ${permission}): ${String(e?.message||e)}`);
       err.cause=e;err.code='OIM_LOCAL_FETCH_FAILED';err.addressSpace=space;err.permission=permission;
+      throw err;
+    }
+    if(timedOut){
+      const err=new Error(`fetch response-header timeout after ${timeout}ms`);
+      err.code='OIM_FETCH_TIMEOUT';
+      err.cause=e;
       throw err;
     }
     throw e;
@@ -3608,7 +3615,11 @@ function setupNatsRtcRoute(pc,dc,remoteNode,sessionId,role){
   };
   for(const name of ['hello','infer','result','delta','state','grant','merit','ping','pex'])wrapper.actions[name]=makeManualAction(wrapper,name);
   state.rooms.set(key,wrapper);
-  state.nats.rtcSessions.set(sessionId,{pc,dc,wrapper,remoteNode,role,created:now(),closed:false});
+  const priorSession=state.nats.rtcSessions.get(sessionId);
+  state.nats.rtcSessions.set(sessionId,{
+    ...(priorSession||{}),
+    pc,dc,wrapper,remoteNode,role,created:priorSession?.created||now(),closed:false
+  });
 
   wrapper.actions.hello.onMessage=(data,meta)=>handleHello(data,meta,wrapper);
   wrapper.actions.infer.onMessage=(data,meta)=>handleRemoteInference(data,meta,wrapper);
@@ -3667,6 +3678,13 @@ async function initiateNatsRtc(remoteNode){
 async function acceptNatsRtcOffer(msg){
   const remote=msg.from,session=msg.session;
   if(directConnectedStableNodes().has(remote))return;
+
+  // NATS can redeliver the same offer on reconnect/subscription churn. Reserve
+  // the inbound session BEFORE SDP work so a duplicate cannot create a second
+  // RTCPeerConnection and a second answer for the same session.
+  const existing=state.nats.rtcSessions.get(session);
+  if(existing&&!existing.closed)return existing;
+
   // Glare resolution: if both offered, lexical-low node remains offerer.
   const outgoing=[...state.nats.rtcSessions.entries()].find(([,x])=>x.remoteNode===remote&&x.role==='offer'&&!x.closed);
   if(outgoing){
@@ -3674,11 +3692,29 @@ async function acceptNatsRtcOffer(msg){
     closeNatsRtcSession(outgoing[0]);
   }
   if(directRtcNodeCount()>=state.natsTargetPeers+4)return;
+
   const pc=new RTCPeerConnection(manualRtcConfig());
-  pc.ondatachannel=e=>setupNatsRtcRoute(pc,e.channel,remote,session,'answer');
-  await pc.setRemoteDescription({type:'offer',sdp:String(msg.payload?.sdp||'')});
-  const ans=await pc.createAnswer();await pc.setLocalDescription(ans);await waitIceGathering(pc,7000);
-  await sendNatsSignal(remote,'answer',{sdp:pc.localDescription?.sdp},session);
+  state.nats.rtcSessions.set(session,{
+    pc,dc:null,wrapper:null,remoteNode:remote,role:'answer-pending',
+    created:now(),closed:false
+  });
+
+  try{
+    pc.ondatachannel=e=>setupNatsRtcRoute(pc,e.channel,remote,session,'answer');
+    await pc.setRemoteDescription({type:'offer',sdp:String(msg.payload?.sdp||'')});
+    const ans=await pc.createAnswer();
+    await pc.setLocalDescription(ans);
+    await waitIceGathering(pc,7000);
+
+    const rec=state.nats.rtcSessions.get(session);
+    if(rec&&!rec.closed)rec.role='answer-wait-datachannel';
+
+    await sendNatsSignal(remote,'answer',{sdp:pc.localDescription?.sdp},session);
+    return rec||true;
+  }catch(e){
+    closeNatsRtcSession(session);
+    throw e;
+  }
 }
 async function handleNatsSignal(raw,server){
   let msg;try{msg=JSON.parse(new TextDecoder().decode(raw))}catch(_){return}
@@ -3687,9 +3723,26 @@ async function handleNatsSignal(raw,server){
     try{await acceptNatsRtcOffer(msg)}catch(e){log('warn',`NATS WebRTC offer from ${msg.from.slice(0,10)} failed: ${e.message}`)}
   }else if(msg.type==='answer'){
     const x=state.nats.rtcSessions.get(msg.session);
-    if(!x||x.role!=='offer'||x.remoteNode!==msg.from)return;
-    try{await x.pc.setRemoteDescription({type:'answer',sdp:String(msg.payload?.sdp||'')})}
-    catch(e){log('warn',`NATS WebRTC answer failed: ${e.message}`);closeNatsRtcSession(msg.session)}
+    if(!x||x.closed||x.role!=='offer'||x.remoteNode!==msg.from)return;
+
+    // NATS may redeliver a valid answer after the first copy has already moved
+    // the RTCPeerConnection to stable. That is normal duplicate signaling, not
+    // a route failure. Only apply an answer while we actually have a local offer.
+    if(x.pc.signalingState!=='have-local-offer')return;
+    if(x.answerApplied)return;
+
+    try{
+      x.answerApplied=true;
+      await x.pc.setRemoteDescription({
+        type:'answer',sdp:String(msg.payload?.sdp||'')
+      });
+    }catch(e){
+      // A concurrent/late duplicate can race the state transition to stable.
+      if(x.pc.signalingState==='stable')return;
+      x.answerApplied=false;
+      log('warn',`NATS WebRTC answer failed: ${e.message}`);
+      closeNatsRtcSession(msg.session);
+    }
   }
 }
 async function consumeNatsSubscription(sub,handler,server){
@@ -4970,7 +5023,8 @@ async function executeRemoteJob(job){
     let completion,firstContentAt=0;
     sendJobState(wrapper,peerId,data.id,'backend-start',{
       model:auth.match.model,
-      endpoint_label:auth.match.label||'local'
+      endpoint_label:auth.match.label||'local',
+      endpoint:auth.match.endpoint||null
     });
     try{
       completion=await callLocalProvider(auth.match,auth.messages,{
@@ -5006,6 +5060,8 @@ async function executeRemoteJob(job){
 
       log('warn',`Streaming provider path failed (${String(primaryErr.message||primaryErr).slice(0,140)}); retrying f912 compatibility request.`);
       sendJobState(wrapper,peerId,data.id,'compat-retry',{
+        phase:/response-header timeout/i.test(String(primaryErr.message||primaryErr))?'backend-handshake':'stream',
+
         error:String(primaryErr.message||primaryErr).slice(0,180)
       });
 
@@ -5164,10 +5220,18 @@ function handleRemoteState(data,meta,wrapper){
     }
     if(data.status==='queued')log('info',`Remote job ${data.id.slice(0,8)} queued at position ${data.position||'?'}.`);
     if(data.status==='running')log('info',`Remote job ${data.id.slice(0,8)} is running.`);
-    if(data.status==='backend-start')log('info',`Remote job ${data.id.slice(0,8)} entered local backend · ${data.model||'model'}.`);
-    if(data.status==='streaming')log('ok',`Remote job ${data.id.slice(0,8)} first output · TTFT ${Number(data.ttft_ms)||0}ms.`);
+    if(data.status==='backend-start'){
+      if(p.lastLoggedPhase!=='backend-start'){
+        p.lastLoggedPhase='backend-start';
+        log('info',`Remote job ${data.id.slice(0,8)} entered local backend · ${data.model||'model'}${data.endpoint?' · '+data.endpoint:''}.`);
+      }
+    }
+    if(data.status==='streaming'){
+      p.lastLoggedPhase='streaming';
+      log('ok',`Remote job ${data.id.slice(0,8)} first output · TTFT ${Number(data.ttft_ms)||0}ms.`);
+    }
     if(data.status==='compat-retry'){
-      log('warn',`Remote job ${data.id.slice(0,8)} switched to known-good compatibility inference path.`);
+      log('warn',`Remote job ${data.id.slice(0,8)} switched to compatibility inference path${data.phase?' after '+data.phase+' failure':''}.`);
     }
     if(data.status==='reasoning'){
       p.reasoningChars=Number(data.reasoning_chars)||p.reasoningChars||0;
@@ -6104,9 +6168,17 @@ async function callOpenAI(endpointUrl,model,messages,extra={}){
   }
   applyReasoningPayload(payload,ep,reasoningMode);
 
+  // A streaming request must reach response headers promptly enough to prove
+  // the backend accepted it. The old 180s fetch timeout meant a provider could
+  // sit in BACKEND-START for three minutes before the SSE reader watchdog even
+  // existed. Abort the HTTP request itself if no headers arrive.
+  const streamHandshakeMs=clamp(
+    Number(extra.stream_handshake_timeout_ms)||30000,
+    8000,60000
+  );
   const res=await fetchTimeout(`${endpointUrl}/v1/chat/completions`,fetchOptsFor(endpointUrl,{
     method:'POST',headers,body:JSON.stringify(payload)
-  }),180_000);
+  }),streamHandshakeMs);
 
   if(!res.ok){
     let body='';try{body=(await res.text()).slice(0,800)}catch(_){}
@@ -6318,7 +6390,7 @@ async function callOpenAILegacyCompat(endpointUrl,model,prompt,extra={}){
 }
 function shouldUseLegacyProviderFallback(err){
   const msg=String(err?.message||err||'').toLowerCase();
-  return /failed to fetch|local inference fetch failed|oim_local_fetch_failed|networkerror|network error|streaming response has no readable body|stream completed without text or tool calls|stream first-byte timeout|stream idle timeout/.test(msg);
+  return /failed to fetch|local inference fetch failed|oim_local_fetch_failed|oim_fetch_timeout|fetch response-header timeout|networkerror|network error|streaming response has no readable body|stream completed without text or tool calls|stream first-byte timeout|stream idle timeout/.test(msg);
 }
 
 function routeTransportConnected(routeId){
