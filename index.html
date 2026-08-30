@@ -7,13 +7,13 @@
 <meta name="description" content="Open Inference Mesh: a static-hostable, local-first, peer-to-peer inference discovery and sharing node with signed identities, scoped capability access, WebRTC and NKN fallback routing.">
 <meta name="robots" content="index,follow">
 <meta name="application-name" content="Open Inference Mesh">
-<meta name="oim-protocol" content="open-inference-mesh-v4">
+<meta name="oim-protocol" content="open-inference-mesh-v5">
 <meta name="agent-interface" content="WebMCP, window.OIM, same-origin postMessage RPC, CustomEvent RPC">
 <title>OPEN INFERENCE MESH</title>
 <script type="application/ld+json" id="oimJsonLd">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Open Inference Mesh","applicationCategory":"DeveloperApplication","operatingSystem":"Any modern HTTPS browser","description":"A backendless browser node for discovering, routing, serving, and consuming locally owned and peer-to-peer machine inference.","isAccessibleForFree":true,"featureList":["Local model discovery","Multi-plane WebRTC discovery","NKN encrypted overlay fallback","Signed peer identities","Scoped inference capabilities","Queue and rate limits","WebMCP agent tools"]}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Open Inference Mesh","applicationCategory":"DeveloperApplication","operatingSystem":"Any modern HTTPS browser","description":"A backendless browser node for discovering, routing, serving, and consuming locally owned and peer-to-peer machine inference.","isAccessibleForFree":true,"featureList":["Local model discovery","Global NATS rendezvous and multi-plane WebRTC discovery","NKN encrypted overlay fallback","Signed peer identities","Scoped inference capabilities","Queue and rate limits","WebMCP agent tools"]}
 </script>
-<script type="application/json" id="oimStaticAgentManifest">{"protocol":"open-inference-mesh","version":4,"preferred_interface":"WebMCP","agent_interfaces":["WebMCP","window.OIM","same-origin postMessage","CustomEvent"],"security":"Agent-readable state excludes endpoint API keys, NKN seed material, and capability-token contents."}</script>
+<script type="application/json" id="oimStaticAgentManifest">{"protocol":"open-inference-mesh","version":5,"preferred_interface":"WebMCP","agent_interfaces":["WebMCP","window.OIM","same-origin postMessage","CustomEvent"],"security":"Agent-readable state excludes endpoint API keys, NKN seed material, and capability-token contents."}</script>
 <style>
 :root{
   --bg:#090a0b;
@@ -343,6 +343,7 @@ textarea.compact{min-height:55px;resize:vertical}
           <button class="router on strategyToggle" data-strategy="mqtt">MQTT<small>public broker federation</small></button>
           <button class="router on strategyToggle" data-strategy="ipfs">WAKU<small>libp2p/Waku light node</small></button>
           <button id="nknToggle" class="router on" aria-label="Enable NKN encrypted overlay fallback">NKN<small>encrypted overlay fallback</small></button>
+          <button id="natsToggle" class="router on" aria-label="Enable NATS rendezvous">NATS<small>global signed rendezvous</small></button>
           <button class="router strategyToggle" data-strategy="wsrelay">WS RELAY<small>user/community supplied</small></button>
         </div>
 
@@ -358,6 +359,14 @@ textarea.compact{min-height:55px;resize:vertical}
 
         <div class="label">Optional community WebSocket relays</div>
         <textarea id="wsRelayUrls" class="field compact" placeholder="wss://relay1.example&#10;wss://relay2.example"></textarea>
+
+        <div class="label">NATS global rendezvous</div>
+        <textarea id="natsServers" class="field compact" aria-label="NATS WebSocket rendezvous servers" placeholder="wss://demo.nats.io:8443"></textarea>
+        <div class="control-grid" style="margin-top:7px">
+          <div><div class="mini">target direct peers</div><input id="natsTargetPeers" class="field" type="number" min="2" max="48" value="12"></div>
+          <div><div class="mini">candidate reservoir</div><input id="natsReservoirSize" class="field" type="number" min="32" max="2048" value="384"></div>
+        </div>
+        <div class="mini" style="margin-top:5px">One WSS URL per line. Each URL is treated as an independent rendezvous fabric. Default uses the public NATS demo endpoint; add community/self-hosted fabrics for redundancy.</div>
 
         <div class="label">NKN encrypted overlay</div>
         <div class="row">
@@ -482,6 +491,7 @@ textarea.compact{min-height:55px;resize:vertical}
         <div class="agent-tool"><strong>oim_join_mesh / oim_leave_mesh</strong><p>Control public mesh participation.</p></div>
         <div class="agent-tool"><strong>oim_run_inference</strong><p>Run local-first or mesh inference with explicit route/model selection.</p></div>
         <div class="agent-tool"><strong>oim_set_provider_policy</strong><p>Configure model scope, sharing, access mode, queue and rate limits.</p></div>
+        <div class="agent-tool"><strong>oim_set_rendezvous</strong><p>Configure global NATS rendezvous fabrics, direct-peer target and candidate reservoir.</p></div>
         <div class="agent-tool"><strong>oim_connect_nkn</strong><p>Establish an NKN overlay route to a known address.</p></div>
         <div class="agent-tool"><strong>oim_issue_capability / oim_import_capability</strong><p>Exchange identity-bound scoped inference grants.</p></div>
         <div class="label">RPC example</div>
@@ -563,7 +573,7 @@ LocalAI common:   http://127.0.0.1:8080</div>
       <div id="tab-about" class="tabpane">
         <div class="label">What this file is</div>
         <div class="hint">
-          A zero-backend browser node. Static hosting supplies only this HTML; peer discovery fans out over independent public signaling substrates, with manual WebRTC rendezvous and an independent NKN encrypted overlay fallback. WebMCP and window.OIM make the same node directly operable by browser agents.
+          A zero-backend browser node. Static hosting supplies only this HTML; peer discovery fans out over global signed NATS rendezvous plus independent Nostr/BitTorrent/MQTT/Waku signaling, with manual WebRTC rendezvous and an independent NKN encrypted overlay fallback. WebMCP and window.OIM make the same node directly operable by browser agents.
         </div>
         <div class="label">Data path</div>
         <div class="code">browser
@@ -595,7 +605,7 @@ NKN encrypted overlay fallback</div>
       </div>
 
       <div class="footer-note">
-        STATIC HOST SAFE · WEBRTC + NKN · WEBMCP AGENT TOOLS · MULTI-PLANE DISCOVERY · SIGNED IDENTITIES · CAPABILITY-SCOPED INFERENCE · QUEUE/RATE STATE · REMOTE INFERENCE OFF BY DEFAULT
+        STATIC HOST SAFE · NATS RENDEZVOUS + WEBRTC + NKN · WEBMCP AGENT TOOLS · MULTI-PLANE DISCOVERY · SIGNED IDENTITIES · CAPABILITY-SCOPED INFERENCE · QUEUE/RATE STATE · REMOTE INFERENCE OFF BY DEFAULT
       </div>
       <section class="sr-only" id="agentSemanticDescription" aria-label="Open Inference Mesh agent instructions">
         <h1>Open Inference Mesh agent interface</h1>
@@ -622,6 +632,10 @@ const clamp = (x,a,b) => Math.max(a,Math.min(b,x));
 const CONFIG = {
   trysteroVersion: '0.25.3',
   nknSdkVersion: '1.3.6',
+  natsCoreVersion: '3.4.0',
+  natsPresenceMs: 8000,
+  natsCandidateTtlMs: 90000,
+  natsSignalMaxAgeMs: 90000,
   appId: 'open-inference-mesh-browser-v2',
   defaultNamespace: 'open-inference-mesh-v2',
   shardCount: 64,
@@ -679,6 +693,20 @@ const state = {
   nkn: {sdk:null,client:null,connected:false,addr:'',seed:'',rpc:'',status:'idle'},
   nknWrappers: new Map(),
   nknChunks: new Map(),
+  natsEnabled: true,
+  natsTargetPeers: 12,
+  natsReservoirSize: 384,
+  nats: {
+    module:null,
+    connections:new Map(),
+    candidates:new Map(),
+    rtcSessions:new Map(),
+    signalSeen:new Map(),
+    namespaceHash:'',
+    presenceTimer:null,
+    maintainTimer:null,
+    status:'idle'
+  },
   activeRemoteJobs: 0,
   localActiveJobs: 0,
   advertise: true,
@@ -829,7 +857,7 @@ async function initIdentity(){
 function loadPolicy(){
   try{
     const p=JSON.parse(localStorage.getItem('oim.policy')||'{}');
-    for(const k of ['advertise','share','accessMode','maxJobs','perPeerConcurrent','perPeerQueue','maxQueue','rpmLimit','tpmLimit','maxRemoteTokens','queueTimeoutSec','grantHours','grantModels','serveModels','nknEnabled']){
+    for(const k of ['advertise','share','accessMode','maxJobs','perPeerConcurrent','perPeerQueue','maxQueue','rpmLimit','tpmLimit','maxRemoteTokens','queueTimeoutSec','grantHours','grantModels','serveModels','nknEnabled','natsEnabled','natsTargetPeers','natsReservoirSize']){
       if(p[k]!==undefined) state[k]=p[k];
     }
     const a=JSON.parse(localStorage.getItem('oim.allowlist')||'[]');
@@ -845,7 +873,7 @@ function persistPolicy(){
     advertise:state.advertise,share:state.share,accessMode:state.accessMode,
     maxJobs:state.maxJobs,perPeerConcurrent:state.perPeerConcurrent,perPeerQueue:state.perPeerQueue,maxQueue:state.maxQueue,
     rpmLimit:state.rpmLimit,tpmLimit:state.tpmLimit,maxRemoteTokens:state.maxRemoteTokens,
-    queueTimeoutSec:state.queueTimeoutSec,grantHours:state.grantHours,grantModels:state.grantModels,serveModels:state.serveModels,nknEnabled:state.nknEnabled
+    queueTimeoutSec:state.queueTimeoutSec,grantHours:state.grantHours,grantModels:state.grantModels,serveModels:state.serveModels,nknEnabled:state.nknEnabled,natsEnabled:state.natsEnabled,natsTargetPeers:state.natsTargetPeers,natsReservoirSize:state.natsReservoirSize
   }));
   localStorage.setItem('oim.allowlist',JSON.stringify([...state.allowlist]));
   localStorage.setItem('oim.grants',JSON.stringify([...state.grants]));
@@ -862,6 +890,9 @@ function syncPolicyUI(){
   ]) $('#'+id).value=state[k];
   $$('.strategyToggle').forEach(b=>b.classList.toggle('on',state.enabledStrategies.has(b.dataset.strategy)));
   if($('#nknToggle'))$('#nknToggle').classList.toggle('on',state.nknEnabled);
+  if($('#natsToggle'))$('#natsToggle').classList.toggle('on',state.natsEnabled);
+  if($('#natsTargetPeers'))$('#natsTargetPeers').value=state.natsTargetPeers;
+  if($('#natsReservoirSize'))$('#natsReservoirSize').value=state.natsReservoirSize;
   updateGrantSummary();
 }
 function updateGrantSummary(){
@@ -1245,7 +1276,8 @@ async function joinOneRoom(strategy,logical,kind,shard){
     result:room.makeAction('oim-result'),
     state:room.makeAction('oim-state'),
     grant:room.makeAction('oim-grant'),
-    ping:room.makeAction('oim-ping')
+    ping:room.makeAction('oim-ping'),
+    pex:room.makeAction('oim-pex')
   };
   const wrapper={room,actions,key:fullKey,logical,strategy,kind,shard,name:rName,peers:new Set()};
   state.rooms.set(fullKey,wrapper);
@@ -1272,6 +1304,7 @@ async function joinOneRoom(strategy,logical,kind,shard){
   actions.result.onMessage=(data,meta)=>handleInferenceResult(data,meta,wrapper);
   actions.state.onMessage=(data,meta)=>handleRemoteState(data,meta,wrapper);
   actions.grant.onMessage=(data,meta)=>handleIncomingGrant(data,meta,wrapper);
+  actions.pex.onMessage=(data,meta)=>handlePeerExchange(data,meta,wrapper);
   actions.ping.onMessage=(data,meta)=>{
     upsertPeer(meta.peerId,{lastSeen:now(),online:true});
     if(data?.echo)actions.ping.send({nonce:data.nonce,reply:true,ts:now()},{target:meta.peerId}).catch(()=>{});
@@ -1318,9 +1351,12 @@ async function joinMesh(){
     }else state.exploreShard=0;
 
     const results=await Promise.allSettled([...state.enabledStrategies].map(joinStrategy));
-    const nknStarted=state.nknEnabled?await startNkn():false;
+    const [nknStarted,natsStarted]=await Promise.all([
+      state.nknEnabled?startNkn():Promise.resolve(false),
+      state.natsEnabled?startNats():Promise.resolve(false)
+    ]);
     const online=[...state.strategyStatus.values()].filter(x=>x.status==='online').length;
-    if(!online&&!nknStarted)throw new Error('no discovery or overlay substrate could be started');
+    if(!online&&!nknStarted&&!natsStarted)throw new Error('no discovery, rendezvous, or overlay substrate could be started');
 
     if($('#discoveryMode').value==='sharded')state.exploreTimer=setInterval(()=>rotateExploreRooms(),CONFIG.exploreIntervalMs);
     state.heartbeatTimer=setInterval(()=>broadcastHello(),CONFIG.heartbeatMs);
@@ -1343,6 +1379,7 @@ function leaveMesh(){
   state.exploreTimer=state.heartbeatTimer=state.cleanupTimer=null;
   state.joined=false;
   stopNkn();
+  stopNats();
   for(const p of state.peers.values())p.online=false;
   $('#joinBtn').textContent='join mesh';
   $('#joinBtn').classList.add('primary');$('#joinBtn').classList.remove('bad');
@@ -1376,6 +1413,349 @@ function pruneNodeRoutes(){
 }
 
 
+
+function natsServerList(){
+  const raw=($('#natsServers')?.value||localStorage.getItem('oim.natsServers')||'wss://demo.nats.io:8443');
+  const urls=raw.split(/[\s,]+/).map(x=>x.trim()).filter(Boolean).map(x=>{
+    if(/^wss?:\/\//i.test(x))return x;
+    return `wss://${x}`;
+  });
+  return [...new Set(urls)].slice(0,16);
+}
+async function loadNatsCore(){
+  if(state.nats.module)return state.nats.module;
+  const v=CONFIG.natsCoreVersion;
+  const urls=[
+    `https://esm.run/@nats-io/nats-core@${v}`,
+    `https://esm.sh/@nats-io/nats-core@${v}?bundle`,
+    `https://cdn.jsdelivr.net/npm/@nats-io/nats-core@${v}/+esm`
+  ];
+  let last;
+  for(const u of urls){
+    try{
+      const mod=await import(u);
+      if(!mod.wsconnect)throw new Error('wsconnect export unavailable');
+      state.nats.module=mod;
+      log('ok',`NATS core ${v} loaded from ${new URL(u).host}.`);
+      return mod;
+    }catch(e){last=e;log('warn',`NATS module source failed: ${e.message}`)}
+  }
+  throw last||new Error('unable to load NATS browser core');
+}
+async function natsNamespaceHash(){
+  const ns=($('#namespaceInput').value.trim()||CONFIG.defaultNamespace);
+  return (await sha256(ns)).slice(0,24);
+}
+function natsSubjects(nodeId=state.nodeId){
+  const h=state.nats.namespaceHash||'unknown';
+  return {
+    presence:`oim.v5.${h}.presence`,
+    signal:`oim.v5.${h}.signal.${nodeId}`
+  };
+}
+function natsSetStatus(status,detail=''){
+  state.nats.status=status;
+  const b=$('#natsToggle');
+  if(b){
+    b.classList.remove('loading','err');
+    b.classList.toggle('on',state.natsEnabled);
+    if(status==='loading'||status==='connecting')b.classList.add('loading');
+    if(status==='error')b.classList.add('err');
+  }
+  renderRouterState();updateStats();
+  if(detail&&status==='error')log('warn',`NATS: ${detail}`);
+}
+async function verifyAdvertisementOnly(data){
+  if(!data||typeof data!=='object'||!data.sig||!data.pub||!data.alg||!data.kxPub||!data.node)return false;
+  const proof={v:data.v>=2?1:data.v,node:data.node,pub:data.pub,alg:data.alg,kxPub:data.kxPub,sig:data.sig};
+  if(!(await verifyIdentityProof(proof)))return false;
+  if(data.adSig){
+    const {adSig,...adBody}=data; delete adBody.sig;
+    if(!(await verifySignedObject(adBody,data.pub,data.alg,adSig)))return false;
+  }
+  return true;
+}
+async function makeSignedNatsSignal(type,to,payload,session=null){
+  const body={
+    v:1,type,from:state.nodeId,to,ts:now(),nonce:uuid(),session:session||uuid(),
+    pub:state.identity.pub,alg:state.identity.alg,payload
+  };
+  return {...body,sig:await signObject(body)};
+}
+async function verifyNatsSignal(msg){
+  if(!msg||msg.v!==1||!msg.sig||!msg.pub||!msg.alg||!msg.from||msg.to!==state.nodeId)return false;
+  if(Math.abs(now()-Number(msg.ts||0))>CONFIG.natsSignalMaxAgeMs)return false;
+  const seen=state.nats.signalSeen.get(msg.nonce);
+  if(seen)return false;
+  const {sig,...body}=msg;
+  const derived=await verifySignedObject(body,msg.pub,msg.alg,sig);
+  if(derived!==msg.from)return false;
+  state.nats.signalSeen.set(msg.nonce,now());
+  return true;
+}
+async function natsPublishAll(subject,obj){
+  const bytes=enc.encode(JSON.stringify(obj));
+  const jobs=[];
+  for(const [server,rec] of state.nats.connections){
+    if(!rec.nc)continue;
+    try{rec.nc.publish(subject,bytes);jobs.push(Promise.resolve())}catch(e){rec.lastError=String(e.message||e)}
+  }
+  return Promise.allSettled(jobs);
+}
+async function publishNatsPresence(){
+  if(!state.natsEnabled||!state.nats.connections.size)return;
+  const ad=await getCapabilities();
+  const envelope={v:1,ts:now(),expires:now()+CONFIG.natsCandidateTtlMs,ad};
+  await natsPublishAll(natsSubjects().presence,envelope);
+}
+function natsCandidateScore(node){
+  // Stable FNV-1a ranking makes selection deterministic without central coordination.
+  const pair=[state.nodeId,node].sort().join(':');
+  let h=2166136261;
+  for(let i=0;i<pair.length;i++){h^=pair.charCodeAt(i);h=Math.imul(h,16777619)}
+  return h>>>0;
+}
+function connectedStableNodes(){
+  return new Set([...state.peers.values()].filter(p=>p.online&&p.verified&&p.node).map(p=>p.node));
+}
+function directConnectedStableNodes(){
+  return new Set([...state.peers.values()].filter(p=>p.online&&p.verified&&p.node&&p.strategy!=='nkn').map(p=>p.node));
+}
+function directRtcNodeCount(){
+  return directConnectedStableNodes().size;
+}
+function natsHasPending(remoteNode){
+  return [...state.nats.rtcSessions.values()].some(x=>x.remoteNode===remoteNode&&!x.closed);
+}
+function closeNatsRtcSession(sessionId){
+  const x=state.nats.rtcSessions.get(sessionId);if(!x)return;
+  x.closed=true;
+  try{x.dc?.close()}catch(_){}
+  try{x.pc?.close()}catch(_){}
+  state.nats.rtcSessions.delete(sessionId);
+}
+async function ingestRendezvousAdvertisement(ad,source='nats'){
+  if(!ad||ad.node===state.nodeId)return false;
+  if(!(await verifyAdvertisementOnly(ad)))return false;
+  const old=state.nats.candidates.get(ad.node)||{};
+  const sources=new Set(old.sources||[]);sources.add(source);
+  state.nats.candidates.set(ad.node,{
+    node:ad.node,ad,lastSeen:now(),expires:now()+CONFIG.natsCandidateTtlMs,
+    sources,nknAddr:ad.nknAddr||'',models:Array.isArray(ad.models)?ad.models:[],
+    share:!!ad.share,load:Number(ad.load)||0,capacity:Number(ad.capacity)||0
+  });
+  // A NATS rendezvous discovery can immediately bootstrap an NKN data route.
+  if(state.nknEnabled&&state.nkn.connected&&ad.nknAddr&&ad.nknAddr!==state.nkn.addr){
+    nknSendHello(ad.nknAddr).catch(()=>{});
+  }
+  maintainNatsRtcPeers();
+  renderRouterState();renderStatePanel();emitAgentState?.();
+  return true;
+}
+async function handleNatsPresence(raw,server){
+  let env;try{env=JSON.parse(new TextDecoder().decode(raw))}catch(_){return}
+  if(env?.v!==1||!env.ad||Number(env.expires||0)<now())return;
+  const fresh=!state.nats.candidates.has(env.ad.node);
+  if(await ingestRendezvousAdvertisement(env.ad,`nats:${server}`)){
+    if(fresh)log('info',`NATS rendezvous discovered signed node ${env.ad.node.slice(0,10)} via ${server}.`);
+  }
+}
+function setupNatsRtcRoute(pc,dc,remoteNode,sessionId,role){
+  const routeId=`natsrtc:${remoteNode}:${sessionId.slice(0,8)}`;
+  const key=`natsrtc:${sessionId}`;
+  const wrapper={
+    room:{leave:()=>{try{dc.close()}catch(_){}try{pc.close()}catch(_){}}},
+    dc,pc,key,logical:sessionId,strategy:'nats-rtc',kind:'rendezvous',shard:-1,name:'nats-rendezvous',
+    peers:new Set(),actions:{},remoteNode,sessionId
+  };
+  for(const name of ['hello','infer','result','state','grant','ping','pex'])wrapper.actions[name]=makeManualAction(wrapper,name);
+  state.rooms.set(key,wrapper);
+  state.nats.rtcSessions.set(sessionId,{pc,dc,wrapper,remoteNode,role,created:now(),closed:false});
+
+  wrapper.actions.hello.onMessage=(data,meta)=>handleHello(data,meta,wrapper);
+  wrapper.actions.infer.onMessage=(data,meta)=>handleRemoteInference(data,meta,wrapper);
+  wrapper.actions.result.onMessage=(data,meta)=>handleInferenceResult(data,meta,wrapper);
+  wrapper.actions.state.onMessage=(data,meta)=>handleRemoteState(data,meta,wrapper);
+  wrapper.actions.grant.onMessage=(data,meta)=>handleIncomingGrant(data,meta,wrapper);
+  wrapper.actions.pex.onMessage=(data,meta)=>handlePeerExchange(data,meta,wrapper);
+  wrapper.actions.ping.onMessage=(data,meta)=>{
+    upsertPeer(meta.peerId,{lastSeen:now(),online:true});
+    if(data?.echo)wrapper.actions.ping.send({nonce:data.nonce,reply:true,ts:now()}).catch(()=>{});
+  };
+  dc.onmessage=e=>{
+    try{
+      const msg=JSON.parse(String(e.data));
+      if(msg?.v!==1||!msg?.a)return;
+      const a=wrapper.actions[msg.a];if(a?.onMessage)a.onMessage(msg.d,{peerId:routeId});
+    }catch(_){}
+  };
+  dc.onopen=()=>{
+    wrapper.peers.add(routeId);
+    upsertPeer(routeId,{online:true,lastSeen:now(),strategy:'nats-rtc',rooms:new Set([key]),node:remoteNode});
+    log('ok',`NATS rendezvous established direct WebRTC with ${remoteNode.slice(0,10)}.`);
+    sendHello(wrapper,routeId);
+    sendPeerExchange(wrapper,routeId).catch(()=>{});
+    renderPeers();refreshModelSelect();updateStats();renderStatePanel();
+  };
+  const closed=()=>{
+    if(wrapper._closed)return;wrapper._closed=true;
+    wrapper.peers.delete(routeId);
+    const p=state.peers.get(routeId);if(p){p.online=false;p.lastSeen=now()}
+    state.rooms.delete(key);closeNatsRtcSession(sessionId);pruneNodeRoutes();
+    renderPeers();refreshModelSelect();updateStats();renderStatePanel();
+    setTimeout(maintainNatsRtcPeers,500);
+  };
+  dc.onclose=closed;
+  pc.onconnectionstatechange=()=>{if(['failed','closed','disconnected'].includes(pc.connectionState))closed()};
+  return wrapper;
+}
+async function sendNatsSignal(to,type,payload,session){
+  const msg=await makeSignedNatsSignal(type,to,payload,session);
+  await natsPublishAll(natsSubjects(to).signal,msg);
+}
+async function initiateNatsRtc(remoteNode){
+  if(remoteNode===state.nodeId||natsHasPending(remoteNode))return;
+  if(directConnectedStableNodes().has(remoteNode))return;
+  if(directRtcNodeCount()>=state.natsTargetPeers)return;
+  const session=uuid(),pc=new RTCPeerConnection(manualRtcConfig()),dc=pc.createDataChannel('oim-nats-v1',{ordered:true});
+  setupNatsRtcRoute(pc,dc,remoteNode,session,'offer');
+  try{
+    const offer=await pc.createOffer();await pc.setLocalDescription(offer);await waitIceGathering(pc,7000);
+    await sendNatsSignal(remoteNode,'offer',{sdp:pc.localDescription?.sdp},session);
+  }catch(e){closeNatsRtcSession(session);throw e}
+}
+async function acceptNatsRtcOffer(msg){
+  const remote=msg.from,session=msg.session;
+  if(directConnectedStableNodes().has(remote))return;
+  // Glare resolution: if both offered, lexical-low node remains offerer.
+  const outgoing=[...state.nats.rtcSessions.entries()].find(([,x])=>x.remoteNode===remote&&x.role==='offer'&&!x.closed);
+  if(outgoing){
+    if(state.nodeId<remote)return;
+    closeNatsRtcSession(outgoing[0]);
+  }
+  if(directRtcNodeCount()>=state.natsTargetPeers+4)return;
+  const pc=new RTCPeerConnection(manualRtcConfig());
+  pc.ondatachannel=e=>setupNatsRtcRoute(pc,e.channel,remote,session,'answer');
+  await pc.setRemoteDescription({type:'offer',sdp:String(msg.payload?.sdp||'')});
+  const ans=await pc.createAnswer();await pc.setLocalDescription(ans);await waitIceGathering(pc,7000);
+  await sendNatsSignal(remote,'answer',{sdp:pc.localDescription?.sdp},session);
+}
+async function handleNatsSignal(raw,server){
+  let msg;try{msg=JSON.parse(new TextDecoder().decode(raw))}catch(_){return}
+  if(!(await verifyNatsSignal(msg)))return;
+  if(msg.type==='offer'){
+    try{await acceptNatsRtcOffer(msg)}catch(e){log('warn',`NATS WebRTC offer from ${msg.from.slice(0,10)} failed: ${e.message}`)}
+  }else if(msg.type==='answer'){
+    const x=state.nats.rtcSessions.get(msg.session);
+    if(!x||x.role!=='offer'||x.remoteNode!==msg.from)return;
+    try{await x.pc.setRemoteDescription({type:'answer',sdp:String(msg.payload?.sdp||'')})}
+    catch(e){log('warn',`NATS WebRTC answer failed: ${e.message}`);closeNatsRtcSession(msg.session)}
+  }
+}
+async function consumeNatsSubscription(sub,handler,server){
+  try{
+    for await(const m of sub)handler(m.data,server);
+  }catch(e){if(state.natsEnabled)log('warn',`NATS subscription ${server} ended: ${e.message}`)}
+}
+async function connectNatsFabric(server){
+  if(state.nats.connections.has(server))return true;
+  const mod=await loadNatsCore();
+  try{
+    const nc=await mod.wsconnect({
+      servers:server,
+      reconnect:true,
+      maxReconnectAttempts:-1,
+      reconnectTimeWait:1500,
+      timeout:5000,
+      ignoreServerUpdates:false
+    });
+    const presenceSub=nc.subscribe(natsSubjects().presence);
+    const signalSub=nc.subscribe(natsSubjects().signal);
+    const rec={nc,presenceSub,signalSub,server,connectedAt:now(),lastError:null};
+    state.nats.connections.set(server,rec);
+    consumeNatsSubscription(presenceSub,handleNatsPresence,server);
+    consumeNatsSubscription(signalSub,handleNatsSignal,server);
+    nc.closed().then(err=>{
+      state.nats.connections.delete(server);
+      if(err)log('warn',`NATS fabric ${server} closed: ${err.message||err}`);
+      renderRouterState();updateStats();
+    });
+    log('ok',`NATS rendezvous connected: ${nc.getServer?.()||server}`);
+    return true;
+  }catch(e){
+    log('warn',`NATS fabric unavailable ${server}: ${e.message}`);
+    return false;
+  }
+}
+async function startNats(){
+  if(!state.natsEnabled)return false;
+  if(state.nats.connections.size)return true;
+  natsSetStatus('loading');
+  try{
+    state.nats.namespaceHash=await natsNamespaceHash();
+    const servers=natsServerList();
+    if(!servers.length)throw new Error('no NATS WSS servers configured');
+    natsSetStatus('connecting');
+    const results=await Promise.allSettled(servers.map(connectNatsFabric));
+    if(!state.nats.connections.size)throw new Error('all configured NATS WSS fabrics failed');
+    state.nats.status='online';
+    await publishNatsPresence();
+    clearInterval(state.nats.presenceTimer);
+    state.nats.presenceTimer=setInterval(()=>publishNatsPresence().catch(()=>{}),CONFIG.natsPresenceMs);
+    clearInterval(state.nats.maintainTimer);
+    state.nats.maintainTimer=setInterval(maintainNatsRtcPeers,5000);
+    renderRouterState();updateStats();
+    log('ok',`NATS rendezvous online across ${state.nats.connections.size} fabric(s); namespace ${state.nats.namespaceHash}.`);
+    return true;
+  }catch(e){natsSetStatus('error',e.message);return false}
+}
+async function stopNats(){
+  clearInterval(state.nats.presenceTimer);clearInterval(state.nats.maintainTimer);
+  state.nats.presenceTimer=state.nats.maintainTimer=null;
+  for(const [session] of [...state.nats.rtcSessions])closeNatsRtcSession(session);
+  const conns=[...state.nats.connections.values()];state.nats.connections.clear();
+  for(const rec of conns){try{await rec.nc.drain?.()}catch(_){try{await rec.nc.close?.()}catch(__){}}}
+  state.nats.candidates.clear();state.nats.status='off';renderRouterState();updateStats();
+}
+function maintainNatsRtcPeers(){
+  if(!state.natsEnabled||!state.nats.connections.size)return;
+  const t=now();
+  for(const [node,c] of [...state.nats.candidates]){
+    if(c.expires<t||t-c.lastSeen>CONFIG.natsCandidateTtlMs)state.nats.candidates.delete(node);
+  }
+  if(state.nats.candidates.size>state.natsReservoirSize){
+    const keep=[...state.nats.candidates.values()].sort((a,b)=>natsCandidateScore(a.node)-natsCandidateScore(b.node)).slice(0,state.natsReservoirSize);
+    state.nats.candidates=new Map(keep.map(x=>[x.node,x]));
+  }
+  const pendingNodes=new Set([...state.nats.rtcSessions.values()].filter(x=>!x.closed).map(x=>x.remoteNode));
+  let slots=Math.max(0,state.natsTargetPeers-directRtcNodeCount()-pendingNodes.size);
+  if(!slots)return;
+  const connected=directConnectedStableNodes();
+  const candidates=[...state.nats.candidates.values()]
+    .filter(c=>!connected.has(c.node)&&!pendingNodes.has(c.node)&&!natsHasPending(c.node))
+    .sort((a,b)=>natsCandidateScore(a.node)-natsCandidateScore(b.node));
+  for(const c of candidates.slice(0,slots)){
+    initiateNatsRtc(c.node).catch(e=>log('warn',`NATS direct route to ${c.node.slice(0,10)} failed: ${e.message}`));
+  }
+}
+async function sendPeerExchange(wrapper,target){
+  if(!wrapper?.actions?.pex?.send)return;
+  const sample=[...state.peers.values()]
+    .filter(p=>p.online&&p.verified&&p.node&&p.advertisement&&p.node!==state.nodeId)
+    .sort(()=>Math.random()-.5).slice(0,10)
+    .map(p=>p.advertisement);
+  if(!sample.length)return;
+  await wrapper.actions.pex.send({v:1,ads:sample},{target});
+}
+async function handlePeerExchange(data,meta,wrapper){
+  if(data?.v!==1||!Array.isArray(data.ads))return;
+  let accepted=0;
+  for(const ad of data.ads.slice(0,16)){
+    if(await ingestRendezvousAdvertisement(ad,`pex:${wrapper.strategy}`))accepted++;
+  }
+  if(accepted)log('info',`Peer exchange learned ${accepted} signed candidate(s) via ${wrapper.strategy}.`);
+}
+
 async function loadNknSdk(){
   if(state.nkn.sdk)return state.nkn.sdk;
   if(window.nkn?.MultiClient){state.nkn.sdk=window.nkn;return state.nkn.sdk}
@@ -1406,21 +1786,21 @@ async function nknSendRaw(dest,raw){
   const id=uuid(),total=Math.ceil(raw.length/maxChars);
   for(let i=0;i<total;i++)await state.nkn.client.send(dest,JSON.stringify({__oimNknChunk:1,id,i,total,data:raw.slice(i*maxChars,(i+1)*maxChars)}));
 }
-async function nknSend(dest,action,data){return nknSendRaw(dest,JSON.stringify({v:4,a:action,d:data,ts:now()}))}
+async function nknSend(dest,action,data){return nknSendRaw(dest,JSON.stringify({v:5,a:action,d:data,ts:now()}))}
 function makeNknAction(wrapper,name){
   const action={onMessage:null};action.send=async(data,opts={})=>{const peerId=opts?.target||wrapper.peerId;const dest=nknAddrFromPeerId(peerId)||wrapper.addr;if(!dest)throw new Error('NKN target unavailable');return nknSend(dest,name,data)};return action;
 }
 function getNknWrapper(addr){
   if(state.nknWrappers.has(addr))return state.nknWrappers.get(addr);
   const peerId=nknPeerId(addr),key=`nkn:${addr}`;const wrapper={key,logical:key,strategy:'nkn',kind:'overlay',shard:-1,name:'nkn-overlay',addr,peerId,peers:new Set([peerId]),actions:{},room:{leave:()=>{}}};
-  for(const name of ['hello','infer','result','state','grant','ping'])wrapper.actions[name]=makeNknAction(wrapper,name);
-  wrapper.actions.hello.onMessage=(data,meta)=>handleHello(data,meta,wrapper);wrapper.actions.infer.onMessage=(data,meta)=>handleRemoteInference(data,meta,wrapper);wrapper.actions.result.onMessage=(data,meta)=>handleInferenceResult(data,meta,wrapper);wrapper.actions.state.onMessage=(data,meta)=>handleRemoteState(data,meta,wrapper);wrapper.actions.grant.onMessage=(data,meta)=>handleIncomingGrant(data,meta,wrapper);
+  for(const name of ['hello','infer','result','state','grant','ping','pex'])wrapper.actions[name]=makeNknAction(wrapper,name);
+  wrapper.actions.hello.onMessage=(data,meta)=>handleHello(data,meta,wrapper);wrapper.actions.infer.onMessage=(data,meta)=>handleRemoteInference(data,meta,wrapper);wrapper.actions.result.onMessage=(data,meta)=>handleInferenceResult(data,meta,wrapper);wrapper.actions.state.onMessage=(data,meta)=>handleRemoteState(data,meta,wrapper);wrapper.actions.grant.onMessage=(data,meta)=>handleIncomingGrant(data,meta,wrapper);wrapper.actions.pex.onMessage=(data,meta)=>handlePeerExchange(data,meta,wrapper);
   wrapper.actions.ping.onMessage=(data,meta)=>{upsertPeer(meta.peerId,{lastSeen:now(),online:true});if(data?.echo)wrapper.actions.ping.send({nonce:data.nonce,reply:true,ts:now()},{target:meta.peerId}).catch(()=>{})};state.nknWrappers.set(addr,wrapper);return wrapper;
 }
 async function handleNknPayload(src,payload){
   let raw=payload;if(payload instanceof Uint8Array)raw=new TextDecoder().decode(payload);if(typeof raw!=='string')return;let msg;try{msg=JSON.parse(raw)}catch(_){return}
   if(msg?.__oimNknChunk===1){const key=`${src}|${msg.id}`;let c=state.nknChunks.get(key);if(!c){c={ts:now(),parts:new Array(msg.total),count:0,total:msg.total};state.nknChunks.set(key,c)}if(c.total!==msg.total||msg.i<0||msg.i>=c.total)return;if(c.parts[msg.i]===undefined){c.parts[msg.i]=msg.data;c.count++}if(c.count===c.total){state.nknChunks.delete(key);await handleNknPayload(src,c.parts.join(''))}return}
-  if(msg?.v!==4||!msg?.a)return;const wrapper=getNknWrapper(src),peerId=nknPeerId(src);upsertPeer(peerId,{online:true,lastSeen:now(),strategy:'nkn',rooms:new Set([wrapper.key]),nknAddr:src});const action=wrapper.actions[msg.a];if(action?.onMessage)await action.onMessage(msg.d,{peerId});
+  if(msg?.v!==5||!msg?.a)return;const wrapper=getNknWrapper(src),peerId=nknPeerId(src);upsertPeer(peerId,{online:true,lastSeen:now(),strategy:'nkn',rooms:new Set([wrapper.key]),nknAddr:src});const action=wrapper.actions[msg.a];if(action?.onMessage)await action.onMessage(msg.d,{peerId});
 }
 async function startNkn(){
   if(!state.nknEnabled)return false;if(state.nkn.connected)return true;setNknStatus('loading');
@@ -1476,7 +1856,7 @@ function setupManualRoute(pc,dc,role='manual'){
     dc,pc,key,logical:routeId,strategy:'manual',kind:'manual',shard:-1,name:'manual-rendezvous',
     peers:new Set(),actions:{}
   };
-  for(const name of ['hello','infer','result','state','grant','ping'])wrapper.actions[name]=makeManualAction(wrapper,name);
+  for(const name of ['hello','infer','result','state','grant','ping','pex'])wrapper.actions[name]=makeManualAction(wrapper,name);
   state.rooms.set(key,wrapper);
 
   wrapper.actions.hello.onMessage=(data,meta)=>handleHello(data,meta,wrapper);
@@ -1484,6 +1864,7 @@ function setupManualRoute(pc,dc,role='manual'){
   wrapper.actions.result.onMessage=(data,meta)=>handleInferenceResult(data,meta,wrapper);
   wrapper.actions.state.onMessage=(data,meta)=>handleRemoteState(data,meta,wrapper);
   wrapper.actions.grant.onMessage=(data,meta)=>handleIncomingGrant(data,meta,wrapper);
+  wrapper.actions.pex.onMessage=(data,meta)=>handlePeerExchange(data,meta,wrapper);
   wrapper.actions.ping.onMessage=(data,meta)=>{
     upsertPeer(meta.peerId,{lastSeen:now(),online:true});
     if(data?.echo)wrapper.actions.ping.send({nonce:data.nonce,reply:true,ts:now()}).catch(()=>{});
@@ -1588,6 +1969,7 @@ async function sendHello(wrapper,target=null){
 function broadcastHello(){
   if(!state.joined)return;
   for(const w of state.rooms.values())sendHello(w);
+  if(state.natsEnabled)publishNatsPresence().catch(()=>{});
 }
 let announceDebounce;
 function scheduleAnnounce(){
@@ -1638,11 +2020,13 @@ async function handleHello(data,meta,wrapper){
     queue:Number(data.queue)||0,maxQueue:Number(data.maxQueue)||0,rpm:Number(data.rpm)||0,tpm:Number(data.tpm)||0,
     maxTokens:Number(data.maxTokens)||0,strategies:Array.isArray(data.strategies)?data.strategies:[],
     nknAddr:typeof data.nknAddr==='string'?data.nknAddr.slice(0,180):'',
+    advertisement:data,
     strategy:wrapper.strategy,agent:String(data.agent||'browser').slice(0,80),rooms:new Set([wrapper.key])
   });
   if(state.nknEnabled&&state.nkn.connected&&data.nknAddr&&data.nknAddr!==state.nkn.addr&&wrapper.strategy!=='nkn')nknSendHello(data.nknAddr).catch(()=>{});
   // NKN has no symmetric WebRTC onPeerJoin event; reply once so the dialing side learns our signed identity too.
   if(wrapper.strategy==='nkn'&&!wasVerified)sendHello(wrapper,peerId).catch(()=>{});
+  if(!wasVerified)sendPeerExchange(wrapper,peerId).catch(()=>{});
   renderPeers();refreshModelSelect();updateStats();drawTopology();renderStatePanel();
 }
 
@@ -1880,6 +2264,8 @@ function cleanupPeers(){
   }
   for(const [id,ts] of state.seenJobs)if(now()-ts>10*60_000)state.seenJobs.delete(id);
   for(const [key,c] of state.nknChunks)if(now()-c.ts>120_000)state.nknChunks.delete(key);
+  for(const [nonce,ts] of state.nats.signalSeen)if(now()-ts>CONFIG.natsSignalMaxAgeMs*2)state.nats.signalSeen.delete(nonce);
+  for(const [node,c] of [...state.nats.candidates])if(c.expires<now())state.nats.candidates.delete(node);
   for(const [id,arr] of state.ingressUsage){const fresh=arr.filter(t=>t>now()-60_000);if(fresh.length)state.ingressUsage.set(id,fresh);else state.ingressUsage.delete(id)}
   pruneNodeRoutes();
   renderPeers();refreshModelSelect();updateStats();drawTopology();renderStatePanel();
@@ -1949,6 +2335,10 @@ function renderRouterState(){
     div.innerHTML=`<span>${esc(CONFIG.strategyLabels[name])}</span><span>${esc(st.status)} · ${rooms.length} room(s) · ${routes.size} route(s)${relayText}${st.detail?' · '+esc(st.detail).slice(0,55):''}</span>`;
     box.append(div);
   }
+  const nat=document.createElement('div');nat.className='statline';
+  const natsRtc=[...state.peers.values()].filter(p=>p.online&&p.strategy==='nats-rtc').length;
+  nat.innerHTML=`<span>NATS</span><span>${esc(state.nats.status)} · ${state.nats.connections.size} fabric(s) · ${state.nats.candidates.size} candidates · ${natsRtc} RTC route(s)</span>`;
+  box.append(nat);
   const nd=document.createElement('div');nd.className='statline';const nknRoutes=[...state.peers.values()].filter(p=>p.online&&p.strategy==='nkn').length;nd.innerHTML=`<span>NKN</span><span>${esc(state.nkn.status)} · ${nknRoutes} route(s)${state.nkn.addr?' · '+esc(state.nkn.addr).slice(0,24)+'…':''}</span>`;box.append(nd);
   const manualRooms=[...state.rooms.values()].filter(w=>w.strategy==='manual');
   const manualRoutes=manualRooms.reduce((n,w)=>n+w.peers.size,0);
@@ -1963,6 +2353,7 @@ function renderStatePanel(){
     <div class="statline"><span>workers</span><span>${state.activeRemoteJobs}/${state.maxJobs} active · ${state.remoteQueue.length}/${state.maxQueue} queued</span></div>
     <div class="statline"><span>per-peer</span><span>${state.perPeerConcurrent} active · ${state.perPeerQueue} queued · ${state.rpmLimit} RPM · ${state.tpmLimit} est TPM</span></div>
     <div class="statline"><span>model scope</span><span>${esc(state.serveModels)}</span></div>
+    <div class="statline"><span>NATS rendezvous</span><span>${esc(state.nats.status)} · ${state.nats.connections.size} fabric(s) · ${state.nats.candidates.size} candidates</span></div>
     <div class="statline"><span>NKN overlay</span><span>${esc(state.nkn.status)}${state.nkn.addr?' · '+esc(state.nkn.addr).slice(0,22)+'…':''}</span></div>
     <div class="statline"><span>max output</span><span>${state.maxRemoteTokens} tokens · ${state.queueTimeoutSec}s queue TTL</span></div>`;
   const q=$('#queueState');
@@ -2147,6 +2538,7 @@ function updateStats(){
   if(state.joined){
     const planeSet=new Set([...state.rooms.values()].filter(w=>w.strategy!=='manual').map(w=>w.strategy));
     if(state.nkn.connected||state.nkn.status==='connecting')planeSet.add('nkn');
+    if(state.nats.connections.size||state.nats.status==='connecting')planeSet.add('nats');
     const planes=planeSet.size;
     let openRelays=0,totalRelays=0;
     for(const mod of state.strategyModules.values()){
@@ -2202,9 +2594,9 @@ function drawTopology(){
 }
 function hashTiny(s){let h=2166136261;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)}return h>>>0}
 
-const OIM_AGENT_MANIFEST={protocol:'open-inference-mesh',version:4,transport:['webrtc','nkn'],discovery:['nostr','bittorrent','mqtt','waku','custom-ws','manual'],interfaces:['webmcp','window.OIM','postmessage','customevent'],tools:['get_state','list_models','scan_local','add_endpoint','join_mesh','leave_mesh','run_inference','set_provider_policy','connect_nkn','issue_capability','import_capability','announce','create_manual_offer','answer_manual_offer','accept_manual_answer','get_deployment_guide']};
+const OIM_AGENT_MANIFEST={protocol:'open-inference-mesh',version:5,transport:['webrtc','nkn'],discovery:['nats','nostr','bittorrent','mqtt','waku','custom-ws','manual'],interfaces:['webmcp','window.OIM','postmessage','customevent'],tools:['get_state','list_models','scan_local','add_endpoint','join_mesh','leave_mesh','run_inference','set_provider_policy','connect_nkn','set_rendezvous','issue_capability','import_capability','announce','create_manual_offer','answer_manual_offer','accept_manual_answer','get_deployment_guide']};
 function safeEndpointState(ep){return {url:ep.url,label:ep.label,status:ep.status,type:ep.type||null,latency_ms:ep.latency??null,models:[...(ep.models||[])],last_seen:ep.lastSeen||null,error:ep.error||null}}
-function agentSnapshot(){return {protocol:'open-inference-mesh',version:4,timestamp:now(),secure_context:window.isSecureContext,node:{id:state.nodeId,identity_algorithm:state.identity?.alg||null,mesh_joined:state.joined,nkn_enabled:state.nknEnabled,nkn_status:state.nkn.status,nkn_address:state.nkn.addr||null},provider:{advertise:state.advertise,share:state.share,access_mode:state.accessMode,served_models:state.serveModels,max_active:state.maxJobs,max_queue:state.maxQueue,peer_active_limit:state.perPeerConcurrent,peer_queue_limit:state.perPeerQueue,rpm_limit:state.rpmLimit,estimated_tpm_limit:state.tpmLimit,max_remote_output_tokens:state.maxRemoteTokens,queue_timeout_sec:state.queueTimeoutSec,active_jobs:state.activeRemoteJobs,queued_jobs:state.remoteQueue.length},endpoints:[...state.endpoints.values()].map(safeEndpointState),local_models:localModels().map(x=>({model:x.model,endpoint:x.endpoint,label:x.label})),remote_models:remoteModels().map(x=>({model:x.model,provider_node:x.providerNode||null,transport_peer:x.peerId||null,label:x.label,active:x.load||0,queued:x.queue||0,routes:x.routes||1})),peers:[...state.peers.values()].filter(p=>p.online).map(p=>({transport_peer:p.id,node:p.node||null,verified:!!p.verified,strategy:p.strategy||null,nkn_address:p.nknAddr||null,share:!!p.share,access_mode:p.accessMode||null,models:[...(p.models||[])],active:Number(p.load)||0,capacity:Number(p.capacity)||0,queued:Number(p.queue)||0,max_queue:Number(p.maxQueue)||0,last_seen:p.lastSeen||null})),discovery:{enabled:[...state.enabledStrategies],rooms:[...state.rooms.values()].map(w=>({strategy:w.strategy,kind:w.kind,shard:w.shard,peers:w.peers.size})),strategies:Object.fromEntries([...state.strategyStatus.entries()].map(([k,v])=>[k,{...v}]))},grants:{imported_issuers:[...state.grants.keys()],allowlisted_nodes:[...state.allowlist]}}}
+function agentSnapshot(){return {protocol:'open-inference-mesh',version:5,timestamp:now(),secure_context:window.isSecureContext,node:{id:state.nodeId,identity_algorithm:state.identity?.alg||null,mesh_joined:state.joined,nkn_enabled:state.nknEnabled,nkn_status:state.nkn.status,nkn_address:state.nkn.addr||null},provider:{advertise:state.advertise,share:state.share,access_mode:state.accessMode,served_models:state.serveModels,max_active:state.maxJobs,max_queue:state.maxQueue,peer_active_limit:state.perPeerConcurrent,peer_queue_limit:state.perPeerQueue,rpm_limit:state.rpmLimit,estimated_tpm_limit:state.tpmLimit,max_remote_output_tokens:state.maxRemoteTokens,queue_timeout_sec:state.queueTimeoutSec,active_jobs:state.activeRemoteJobs,queued_jobs:state.remoteQueue.length},endpoints:[...state.endpoints.values()].map(safeEndpointState),local_models:localModels().map(x=>({model:x.model,endpoint:x.endpoint,label:x.label})),remote_models:remoteModels().map(x=>({model:x.model,provider_node:x.providerNode||null,transport_peer:x.peerId||null,label:x.label,active:x.load||0,queued:x.queue||0,routes:x.routes||1})),peers:[...state.peers.values()].filter(p=>p.online).map(p=>({transport_peer:p.id,node:p.node||null,verified:!!p.verified,strategy:p.strategy||null,nkn_address:p.nknAddr||null,share:!!p.share,access_mode:p.accessMode||null,models:[...(p.models||[])],active:Number(p.load)||0,capacity:Number(p.capacity)||0,queued:Number(p.queue)||0,max_queue:Number(p.maxQueue)||0,last_seen:p.lastSeen||null})),discovery:{enabled:[...state.enabledStrategies],rooms:[...state.rooms.values()].map(w=>({strategy:w.strategy,kind:w.kind,shard:w.shard,peers:w.peers.size})),strategies:Object.fromEntries([...state.strategyStatus.entries()].map(([k,v])=>[k,{...v}])),nats:{enabled:state.natsEnabled,status:state.nats.status,fabrics:[...state.nats.connections.keys()],candidates:state.nats.candidates.size,target_peers:state.natsTargetPeers,reservoir_size:state.natsReservoirSize,namespace_hash:state.nats.namespaceHash}},grants:{imported_issuers:[...state.grants.keys()],allowlisted_nodes:[...state.allowlist]}}}
 function listAgentModels(){return {local:localModels().map(x=>({model:x.model,endpoint:x.endpoint,label:x.label})),mesh:remoteModels().map(x=>({model:x.model,provider_node:x.providerNode,transport_peer:x.peerId,label:x.label,active:x.load||0,queued:x.queue||0,routes:x.routes||1}))}}
 function chooseAgentModel(model,route='auto',providerNode=null){const local=localModels(),remote=remoteModels();if(model){const lm=local.find(x=>x.model===model),rm=remote.find(x=>x.model===model&&(!providerNode||x.providerNode===providerNode));if(route==='local')return lm?{...lm,route:'local'}:null;if(route==='mesh')return rm?{...rm,route:'mesh'}:null;return lm?{...lm,route:'local'}:(rm?{...rm,route:'mesh'}:null)}if(route==='local')return local[0]?{...local[0],route:'local'}:null;if(route==='mesh')return remote[0]?{...remote[0],route:'mesh'}:null;return local[0]?{...local[0],route:'local'}:(remote[0]?{...remote[0],route:'mesh'}:null)}
 async function agentRunInference({prompt,model=null,route='auto',provider_node=null,max_tokens=CONFIG.defaultMaxTokens,temperature=0.7}={}){prompt=String(prompt||'').trim();if(!prompt)throw new Error('prompt required');if(prompt.length>CONFIG.maxPromptChars)throw new Error('prompt too large');if(!['auto','local','mesh'].includes(route))throw new Error('route must be auto, local, or mesh');const chosen=chooseAgentModel(model,route,provider_node);if(!chosen)throw new Error('no matching model route');const t0=performance.now();if(chosen.route==='local'){const text=await callOpenAI(chosen.endpoint,chosen.model,[{role:'user',content:prompt}],{max_tokens:clamp(Number(max_tokens)||CONFIG.defaultMaxTokens,1,65536),temperature:clamp(Number(temperature)||0.7,0,2)});return {ok:true,text,route:'local',model:chosen.model,endpoint:chosen.endpoint,latency_ms:Math.round(performance.now()-t0)}}const rp=chooseRemotePeer(chosen.model,provider_node||chosen.providerNode);if(!rp)throw new Error('mesh provider unreachable');const res=await callRemote(rp[0],chosen.model,prompt,provider_node||chosen.providerNode||rp[1]?.node);return {ok:true,text:res.text,route:'mesh',model:res.model||chosen.model,provider_node:res.node||chosen.providerNode||rp[1]?.node,latency_ms:Math.round(performance.now()-t0),worker_latency_ms:res.latency_ms||null,queue_ms:res.queue_ms||null}}
@@ -2212,9 +2604,26 @@ async function agentSetProviderPolicy(params={}){for(const k of ['advertise','sh
 async function agentIssueCapability({provider_node,models='*',hours=24}={}){if(!provider_node)throw new Error('provider_node required');const peer=[...state.peers.values()].find(p=>p.online&&p.verified&&p.node===provider_node);if(!peer)throw new Error('peer node not connected');const om=state.grantModels,oh=state.grantHours;try{state.grantModels=String(models||'*');state.grantHours=clamp(Number(hours)||24,1,8760);const token=await sendGrantToPeer(peer.id);return {ok:true,subject:provider_node,models:state.grantModels,hours:state.grantHours,delivered:true}}finally{state.grantModels=om;state.grantHours=oh}}
 async function agentImportCapability({token}={}){token=String(token||'').trim();if(!token)throw new Error('token required');const obj=await inspectCapabilityToken(token);if(!obj||obj.body.exp<=now()||(obj.body.sub!=='*'&&obj.body.sub!==state.nodeId))throw new Error('capability invalid, expired, or bound to another node');state.grants.set(obj.body.iss,token);persistPolicy();updateGrantSummary();renderStatePanel();return {ok:true,issuer:obj.body.iss,subject:obj.body.sub,models:obj.body.models,expires:obj.body.exp,limits:obj.body.limits}}
 function deploymentGuide(){return {origin:location.origin,ollama:`ollama pull MODEL_NAME\nOLLAMA_ORIGINS="${location.origin}" ollama serve`,llama_cpp:`./llama-server -m /path/model.gguf --host 0.0.0.0 --port 8080 --cors-origins "${location.origin}"`,vllm:`vllm serve MODEL_ID --host 0.0.0.0 --port 8000 --allowed-origins '["${location.origin}"]'`,common_endpoints:CONFIG.commonEndpoints.map(([name,url])=>({name,url}))}}
-const OIM_RPC_METHODS={get_state:async()=>agentSnapshot(),list_models:async()=>listAgentModels(),scan_local:async()=>{await scanCommon();return {ok:true,endpoints:[...state.endpoints.values()].map(safeEndpointState)}},add_endpoint:async({url,label='agent',api_key=''}={})=>{const ep=await probeEndpoint(normalizeBaseUrl(String(url||'')),String(label||'agent'),String(api_key||''));if(!ep)throw new Error('endpoint unreachable');return safeEndpointState(ep)},join_mesh:async()=>{await joinMesh();return {ok:state.joined}},leave_mesh:async()=>{leaveMesh();return {ok:true}},run_inference:agentRunInference,set_provider_policy:agentSetProviderPolicy,connect_nkn:async({address}={})=>connectNknAddress(address),issue_capability:agentIssueCapability,import_capability:agentImportCapability,announce:async()=>{broadcastHello();return {ok:true}},create_manual_offer:async()=>{await createManualOffer();return {ok:true,token:$('#manualSignal').value}},answer_manual_offer:async({offer}={})=>{if(offer)$('#manualSignal').value=offer;await answerManualOffer();return {ok:true,answer:$('#manualSignal').value}},accept_manual_answer:async({answer}={})=>{if(answer)$('#manualSignal').value=answer;await acceptManualAnswer();return {ok:true}},get_deployment_guide:async()=>deploymentGuide()};
+
+async function agentSetRendezvous({enabled,servers,target_peers,reservoir_size}={}){
+  if(enabled!==undefined)state.natsEnabled=!!enabled;
+  if(target_peers!==undefined)state.natsTargetPeers=clamp(Number(target_peers)||12,2,48);
+  if(reservoir_size!==undefined)state.natsReservoirSize=clamp(Number(reservoir_size)||384,32,2048);
+  if(Array.isArray(servers)){
+    const clean=servers.map(x=>String(x).trim()).filter(Boolean).slice(0,16);
+    $('#natsServers').value=clean.join('\n');localStorage.setItem('oim.natsServers',$('#natsServers').value);
+  }
+  persistPolicy();syncPolicyUI();
+  if(state.joined){
+    await stopNats();
+    if(state.natsEnabled)await startNats();
+  }
+  return agentSnapshot().discovery.nats;
+}
+
+const OIM_RPC_METHODS={get_state:async()=>agentSnapshot(),list_models:async()=>listAgentModels(),scan_local:async()=>{await scanCommon();return {ok:true,endpoints:[...state.endpoints.values()].map(safeEndpointState)}},add_endpoint:async({url,label='agent',api_key=''}={})=>{const ep=await probeEndpoint(normalizeBaseUrl(String(url||'')),String(label||'agent'),String(api_key||''));if(!ep)throw new Error('endpoint unreachable');return safeEndpointState(ep)},join_mesh:async()=>{await joinMesh();return {ok:state.joined}},leave_mesh:async()=>{leaveMesh();return {ok:true}},run_inference:agentRunInference,set_provider_policy:agentSetProviderPolicy,connect_nkn:async({address}={})=>connectNknAddress(address),set_rendezvous:agentSetRendezvous,issue_capability:agentIssueCapability,import_capability:agentImportCapability,announce:async()=>{broadcastHello();return {ok:true}},create_manual_offer:async()=>{await createManualOffer();return {ok:true,token:$('#manualSignal').value}},answer_manual_offer:async({offer}={})=>{if(offer)$('#manualSignal').value=offer;await answerManualOffer();return {ok:true,answer:$('#manualSignal').value}},accept_manual_answer:async({answer}={})=>{if(answer)$('#manualSignal').value=answer;await acceptManualAnswer();return {ok:true}},get_deployment_guide:async()=>deploymentGuide()};
 async function oimCall(method,params={}){const fn=OIM_RPC_METHODS[method];if(!fn)throw new Error(`unknown OIM method: ${method}`);return fn(params||{})}
-window.OIM=Object.freeze({version:4,manifest:OIM_AGENT_MANIFEST,call:oimCall,getState:()=>agentSnapshot(),listModels:()=>listAgentModels()});
+window.OIM=Object.freeze({version:5,manifest:OIM_AGENT_MANIFEST,call:oimCall,getState:()=>agentSnapshot(),listModels:()=>listAgentModels()});
 let agentEventTimer;function emitAgentState(){clearTimeout(agentEventTimer);agentEventTimer=setTimeout(()=>{const snap=agentSnapshot();window.dispatchEvent(new CustomEvent('oim:state',{detail:snap}));refreshAgentPanel()},100)}
 window.addEventListener('message',async e=>{if(e.source!==window||e.origin!==location.origin)return;const m=e.data;if(!m||m.type!=='oim:rpc'||!m.id||!m.method)return;try{const result=await oimCall(m.method,m.params||{});window.postMessage({type:'oim:rpc-result',id:m.id,ok:true,result},location.origin)}catch(err){window.postMessage({type:'oim:rpc-result',id:m.id,ok:false,error:String(err?.message||err)},location.origin)}});
 window.addEventListener('oim:rpc',async e=>{const m=e.detail||{};if(!m.id||!m.method)return;try{const result=await oimCall(m.method,m.params||{});window.dispatchEvent(new CustomEvent('oim:rpc-result',{detail:{id:m.id,ok:true,result}}))}catch(err){window.dispatchEvent(new CustomEvent('oim:rpc-result',{detail:{id:m.id,ok:false,error:String(err?.message||err)}}))}});
@@ -2229,6 +2638,7 @@ async function registerWebMcpTools(){const mc=document.modelContext,status=$('#a
     {name:'oim_leave_mesh',description:'Leave public mesh. Local inference remains available.',inputSchema:{type:'object',properties:{}},annotations:{readOnlyHint:false},execute:async()=>JSON.stringify(await oimCall('leave_mesh'))},
     {name:'oim_run_inference',description:'Run text inference. AUTO prefers locally owned inference then mesh. No arbitrary shell/tool execution.',inputSchema:{type:'object',properties:{prompt:{type:'string'},model:{type:'string'},route:{type:'string',enum:['auto','local','mesh']},provider_node:{type:'string'},max_tokens:{type:'integer',minimum:1,maximum:65536},temperature:{type:'number',minimum:0,maximum:2}},required:['prompt']},annotations:{readOnlyHint:false,untrustedContentHint:true},execute:async args=>JSON.stringify(await oimCall('run_inference',args))},
     {name:'oim_set_provider_policy',description:'Configure model sharing scope, access mode, concurrency, queue and rate limits.',inputSchema:{type:'object',properties:{advertise:{type:'boolean'},share:{type:'boolean'},access_mode:{type:'string',enum:['capability','allowlist','verified']},serve_models:{type:'string'},max_active:{type:'integer'},max_queue:{type:'integer'},peer_active:{type:'integer'},peer_queue:{type:'integer'},rpm:{type:'integer'},estimated_tpm:{type:'integer'},max_output_tokens:{type:'integer'},queue_timeout_sec:{type:'integer'}}},annotations:{readOnlyHint:false},execute:async args=>JSON.stringify(await oimCall('set_provider_policy',args))},
+    {name:'oim_set_rendezvous',description:'Configure the global NATS rendezvous fabrics and bounded direct-peer reservoir. NATS is signaling/discovery only; inference moves to direct WebRTC or NKN.',inputSchema:{type:'object',properties:{enabled:{type:'boolean'},servers:{type:'array',items:{type:'string'}},target_peers:{type:'integer',minimum:2,maximum:48},reservoir_size:{type:'integer',minimum:32,maximum:2048}}},annotations:{readOnlyHint:false},execute:async args=>JSON.stringify(await oimCall('set_rendezvous',args))},
     {name:'oim_connect_nkn',description:'Connect to a known NKN address as an independent encrypted overlay route.',inputSchema:{type:'object',properties:{address:{type:'string'}},required:['address']},annotations:{readOnlyHint:false},execute:async args=>JSON.stringify(await oimCall('connect_nkn',args))},
     {name:'oim_issue_capability',description:'Issue identity-bound scoped inference access to a connected verified node.',inputSchema:{type:'object',properties:{provider_node:{type:'string'},models:{type:'string'},hours:{type:'number'}},required:['provider_node']},annotations:{readOnlyHint:false},execute:async args=>JSON.stringify(await oimCall('issue_capability',args))},
     {name:'oim_import_capability',description:'Import a signed inference capability token for this node.',inputSchema:{type:'object',properties:{token:{type:'string'}},required:['token']},annotations:{readOnlyHint:false},execute:async args=>JSON.stringify(await oimCall('import_capability',args))},
@@ -2294,6 +2704,22 @@ $('#refreshModelsBtn').onclick=async()=>{
 $('#sendBtn').onclick=runPrompt;
 $('#promptInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();runPrompt()}});
 
+
+$('#natsToggle').onclick=async()=>{
+  state.natsEnabled=!state.natsEnabled;persistPolicy();$('#natsToggle').classList.toggle('on',state.natsEnabled);
+  if(state.natsEnabled&&state.joined)await startNats();else if(!state.natsEnabled)await stopNats();
+};
+$('#natsServers').addEventListener('change',async()=>{
+  localStorage.setItem('oim.natsServers',$('#natsServers').value);
+  if(state.joined&&state.natsEnabled){await stopNats();await startNats()}
+});
+$('#natsTargetPeers').addEventListener('change',()=>{
+  state.natsTargetPeers=clamp(Number($('#natsTargetPeers').value)||12,2,48);persistPolicy();maintainNatsRtcPeers();
+});
+$('#natsReservoirSize').addEventListener('change',()=>{
+  state.natsReservoirSize=clamp(Number($('#natsReservoirSize').value)||384,32,2048);persistPolicy();maintainNatsRtcPeers();
+});
+
 $('#nknToggle').onclick=async()=>{state.nknEnabled=!state.nknEnabled;persistPolicy();$('#nknToggle').classList.toggle('on',state.nknEnabled);if(state.nknEnabled)await startNkn();else stopNkn()};
 $('#copyNknBtn').onclick=async()=>{if(state.nkn.addr){await navigator.clipboard.writeText(state.nkn.addr);log('ok','NKN address copied.')}};
 $('#nknConnectBtn').onclick=async()=>{try{await connectNknAddress($('#nknPeerInput').value)}catch(e){log('err',`NKN route failed: ${e.message}`)}};
@@ -2351,6 +2777,7 @@ setInterval(()=>{state.topologyTick++;drawTopology()},3000);
   $('#wsRelayUrls').value=localStorage.getItem('oim.wsRelayUrls')||'';
   $('#turnConfig').value=localStorage.getItem('oim.turnConfig')||'';
   $('#nknRpcInput').value=localStorage.getItem('oim.nknRpc')||'';
+  $('#natsServers').value=localStorage.getItem('oim.natsServers')||'wss://demo.nats.io:8443';
   syncPolicyUI();
   await checkPermissions();
   renderEndpoints();renderPeers();refreshModelSelect();renderStatePanel();
