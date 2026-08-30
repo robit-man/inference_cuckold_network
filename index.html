@@ -7,7 +7,7 @@
 <meta name="description" content="Open Inference Mesh: a static-hostable, local-first peer-to-peer intelligence commons. People and agents can discover shared inference, use it within provider limits, and voluntarily contribute locally owned models so useful machine intelligence becomes broadly accessible rather than dependent on a single institution.">
 <meta name="robots" content="index,follow">
 <meta name="application-name" content="Open Inference Mesh">
-<meta name="oim-protocol" content="open-inference-mesh-v7.8">
+<meta name="oim-protocol" content="open-inference-mesh-v7.9">
 <meta name="agent-interface" content="WebMCP, window.OIM, same-origin postMessage RPC, CustomEvent RPC">
 <link rel="help" href="?api=docs" title="Open Inference Mesh machine API documentation">
 <link rel="alternate" type="application/json" href="?api=docs" title="OIM agent API">
@@ -4786,11 +4786,8 @@ async function runPrompt(){
     });
 
     // Persist the exact model transcript, including assistant tool_calls,
-    // browser tool results, and the final assistant response.
-    state.chatSession.transcript=sanitizeInferenceMessages(result.transcript||[
-      ...messages,{role:'assistant',content:String(result.text||streamed||'')}
-    ],'');
-    await saveCurrentChatSession({immediate:true});
+    // browser tool results, AND the final assistant response.
+    await commitInferenceToSession(messages,result,result.text||streamed,state.chatSession);
 
     const uniqueProviders=[...new Set(providerHistory)];
     const routeLabel=route==='auto'?'BALANCED':route.toUpperCase();
@@ -4940,7 +4937,8 @@ async function agentRunInference({
   prompt,model=null,route='auto',provider_node=null,
   max_tokens=CONFIG.defaultMaxTokens,temperature=0.7,
   response_mode='stream',chunk_size=CONFIG.defaultChunkSize,on_chunk=null,
-  tools=true,reasoning='auto',on_tool=null,requires={}
+  tools=true,reasoning='auto',on_tool=null,requires={},
+  session=true,session_id=null
 }={}){
   prompt=String(prompt||'').trim();
   if(!prompt)throw new Error('prompt required');
@@ -4960,6 +4958,35 @@ async function agentRunInference({
     window.dispatchEvent(new CustomEvent('oim:inference-tool',{detail:entry}));
   };
 
+  // Agent/query inference is stateful by default. An explicit session:false
+  // requests stateless behavior; session_id targets a specific cached session.
+  let targetSession=null;
+  if(session!==false){
+    if(session_id){
+      const rows=await chatStoreAll();
+      targetSession=rows.find(x=>x.id===String(session_id))||null;
+      if(!targetSession)throw new Error(`chat session not found: ${session_id}`);
+    }else{
+      if(!state.chatSession)await createChatSession();
+      targetSession=state.chatSession;
+    }
+  }
+
+  const baseTranscript=targetSession
+    ?sanitizeInferenceMessages(targetSession.transcript||[],'')
+    :[];
+  const messages=[...baseTranscript,{role:'user',content:prompt}];
+
+  // Commit the user turn before inference so a reload/crash does not lose it.
+  if(targetSession){
+    targetSession.transcript=sanitizeInferenceMessages(messages,'');
+    await chatStorePut(targetSession);
+    if(state.chatSession?.id===targetSession.id){
+      state.chatSession=targetSession;
+      updateSessionStatus();
+    }
+  }
+
   const baseRequirements={
     ...requires,
     tools:tools!==false&&state.toolsEnabled&&enabledBrowserToolDefinitions().length>0,
@@ -4967,7 +4994,7 @@ async function agentRunInference({
   };
   const chosen=chooseAgentModel(model,route,provider_node,baseRequirements);
   if(!chosen)throw new Error('no matching healthy local or agent-open mesh model route');
-  const modelName=chosen.model,t0=performance.now(),messages=[{role:'user',content:prompt}];
+  const modelName=chosen.model,t0=performance.now();
   let lastProvider=null;
   const providerHistory=[];
 
@@ -5000,6 +5027,10 @@ async function agentRunInference({
     }
   });
 
+  if(targetSession){
+    await commitInferenceToSession(messages,result,result.text||'',targetSession);
+  }
+
   return {
     ok:true,text:result.text,route:lastProvider?.source||route,model:modelName,
     endpoint:lastProvider?.endpoint||null,provider_node:lastProvider?.providerNode||result.node||null,
@@ -5007,6 +5038,8 @@ async function agentRunInference({
     tools_used:result.tool_history||[],usage:result.usage||null,
     providers_used:[...new Set(providerHistory)],
     load_balancing:route==='auto',
+    session_id:targetSession?.id||null,
+    session_persisted:!!targetSession,
     latency_ms:Math.round(performance.now()-t0),
     worker_latency_ms:result.latency_ms||null,queue_ms:result.queue_ms||null,
     tokens_per_second:Number(result.tps)||0
@@ -5085,6 +5118,8 @@ function agentApiDocs(){
         chunk_size:'target characters per emitted chunk in chunked mode, default 256',
         tools:'infer: 1/0 to enable/disable the browser tool broker for that request',
         reasoning:'infer: auto | on | off; endpoint-specific request fields are auto-probed',
+        session:'infer: true by default; set 0/false for stateless inference',
+        session_id:'infer: optional persisted chat session id to recall and append to',
         names:'tools action: comma-separated tool names to enable',
         enabled:'share action, 0 or 1',
         agent_public:'share action, 0 or 1',
@@ -5120,7 +5155,7 @@ function agentApiDocs(){
     },
     chat_sessions:{
       persistence:'IndexedDB in the requesting browser, with localStorage fallback',
-      context_behavior:'The current session transcript is rehydrated into every chat inference request. Prior user/assistant/tool turns are not silently discarded.',
+      context_behavior:'The current session transcript is rehydrated into every inference request. User inputs, assistant/inference responses, assistant tool_calls and browser tool results are all persisted and recalled; prior turns are not silently discarded.',
       interfaces:['window.OIM.sessions()','window.OIM.getSession(id)','window.OIM.newSession(title)','window.OIM.loadSession(id)','window.OIM.deleteSession(id)']
     },
     routing:{
@@ -5271,7 +5306,9 @@ async function registerWebMcpTools(){const mc=document.modelContext,status=$('#a
         response_mode:{type:'string',enum:['stream','chunked'],description:'stream is default; chunked emits larger buffered frames'},
         chunk_size:{type:'integer',minimum:32,maximum:4096,description:'target characters per chunk in chunked mode'},
         tools:{type:'boolean',description:'Enable browser-brokered tool calls for this inference request; default true'},
-        reasoning:{type:'string',enum:['auto','on','off'],description:'Reasoning override. AUTO preserves endpoint/model default; ON/OFF use auto-probed endpoint controls.'}},required:['prompt']},annotations:{readOnlyHint:false,untrustedContentHint:true},execute:async args=>JSON.stringify(await oimCall('run_inference',args))},
+        reasoning:{type:'string',enum:['auto','on','off'],description:'Reasoning override. AUTO preserves endpoint/model default; ON/OFF use auto-probed endpoint controls.'},
+        session:{type:'boolean',description:'Use persistent chat session context; default true.'},
+        session_id:{type:'string',description:'Optional persisted session id to recall and append to.'}},required:['prompt']},annotations:{readOnlyHint:false,untrustedContentHint:true},execute:async args=>JSON.stringify(await oimCall('run_inference',args))},
     {name:'oim_accept_peer',description:'Accept a discovered signed peer and enable inference access for it.',inputSchema:{type:'object',properties:{node:{type:'string'}},required:['node']},annotations:{readOnlyHint:false},execute:async args=>JSON.stringify(await oimCall('accept_peer',args))},
     {name:'oim_deny_peer',description:'Deny a signed peer. Denied peers cannot consume this provider and are hidden from remote model routing.',inputSchema:{type:'object',properties:{node:{type:'string'}},required:['node']},annotations:{readOnlyHint:false},execute:async args=>JSON.stringify(await oimCall('deny_peer',args))},
     {name:'oim_set_peer_enabled',description:'Enable or disable inference for an already accepted peer without forgetting the trust decision.',inputSchema:{type:'object',properties:{node:{type:'string'},enabled:{type:'boolean'}},required:['node','enabled']},annotations:{readOnlyHint:false},execute:async args=>JSON.stringify(await oimCall('set_peer_enabled',args))},
@@ -5547,10 +5584,12 @@ async function handleQueryApi(qp){
       const chunk_size=clamp(Number(qp.get('chunk_size'))||CONFIG.defaultChunkSize,32,4096);
       const tools=!qp.has('tools')||!['0','false','off','no'].includes(String(qp.get('tools')).toLowerCase());
       const reasoning=reasoningModeForRequest(qp.get('reasoning')||state.reasoningMode);
+      const session=!qp.has('session')||!['0','false','off','no'].includes(String(qp.get('session')).toLowerCase());
+      const session_id=qp.get('session_id')||null;
       if(!state.joined&&route!=='local')await joinMesh();
       const ready=await waitForAgentRoute(model,route,Number(qp.get('wait_ms'))||30000);
       if(!ready)return setApiResponse({ok:false,error:'No usable local or agent-open mesh route became available before timeout',route,model},503);
-      const result=await agentRunInference({prompt,model,route,provider_node,max_tokens,temperature,response_mode,chunk_size,tools,reasoning});
+      const result=await agentRunInference({prompt,model,route,provider_node,max_tokens,temperature,response_mode,chunk_size,tools,reasoning,session,session_id});
       return setApiResponse({ok:true,result});
     }
     return setApiResponse({ok:false,error:`unknown api action: ${action}`,docs:agentApiDocs().url_api},400);
@@ -5644,6 +5683,50 @@ function sessionTitleFromTranscript(transcript){
   return text?`${text.slice(0,56)}${text.length>56?'…':''}`:'New chat';
 }
 function currentChatTranscript(){return sanitizeInferenceMessages(state.chatSession?.transcript||[],'')}
+
+function transcriptHasFinalAssistant(transcript,text){
+  text=String(text||'');
+  if(!text)return false;
+  for(let i=(transcript||[]).length-1;i>=0;i--){
+    const m=transcript[i];
+    if(m?.role==='assistant'&&String(m.content||'')===text)return true;
+    if(m?.role==='user')break;
+  }
+  return false;
+}
+function finalizedInferenceTranscript(baseMessages,result,fallbackText=''){
+  const finalText=String(result?.text||fallbackText||'');
+  let transcript;
+  try{
+    transcript=sanitizeInferenceMessages(Array.isArray(result?.transcript)?result.transcript:baseMessages,'');
+  }catch(_){
+    transcript=sanitizeInferenceMessages(baseMessages,'');
+  }
+  // Some OpenAI-compatible servers/wrappers return a final string without
+  // propagating the final assistant turn in their transcript. Never lose it.
+  if(finalText&&!transcriptHasFinalAssistant(transcript,finalText)){
+    transcript.push({role:'assistant',content:finalText});
+  }
+  return sanitizeInferenceMessages(transcript,'');
+}
+async function commitInferenceToSession(baseMessages,result,fallbackText='',session=state.chatSession){
+  if(!session)return null;
+  session.transcript=finalizedInferenceTranscript(baseMessages,result,fallbackText);
+  session.updatedAt=chatNow();
+  if(session.title==='New chat')session.title=sessionTitleFromTranscript(session.transcript);
+  // Persist the exact session object rather than relying on whichever session
+  // happens to be active by the time an async model request finishes.
+  await chatStorePut(session);
+  if(state.chatSession?.id===session.id){
+    state.chatSession=session;
+    state.chatSessionId=session.id;
+    localStorage.setItem('oim.chat.lastSession',session.id);
+    await refreshSessionIndex(false);
+    updateSessionStatus();
+  }
+  return session;
+}
+
 function updateSessionStatus(){
   const el=$('#sessionStatus');if(!el)return;
   const t=currentChatTranscript();
