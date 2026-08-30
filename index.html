@@ -7,7 +7,7 @@
 <meta name="description" content="Open Inference Mesh: a static-hostable, local-first peer-to-peer intelligence commons. People and agents can discover shared inference, use it within provider limits, and voluntarily contribute locally owned models so useful machine intelligence becomes broadly accessible rather than dependent on a single institution.">
 <meta name="robots" content="index,follow">
 <meta name="application-name" content="Open Inference Mesh">
-<meta name="oim-protocol" content="open-inference-mesh-v7.9">
+<meta name="oim-protocol" content="open-inference-mesh-v7.10">
 <meta name="agent-interface" content="WebMCP, window.OIM, same-origin postMessage RPC, CustomEvent RPC">
 <link rel="help" href="?api=docs" title="Open Inference Mesh machine API documentation">
 <link rel="alternate" type="application/json" href="?api=docs" title="OIM agent API">
@@ -1215,6 +1215,7 @@ const state = {
   usage: new Map(),          // stable requester node -> sliding-window records
   activeByNode: new Map(),
   seenJobs: new Map(),
+  jobReplay: new Map(),       // stable job id -> status/result + retransmit watchers
   manualPending: null,
   manualRouteSeq: 0,
   nknEnabled: true,
@@ -3568,13 +3569,46 @@ async function authorizeRemoteJob(peerMeta,data){
   if(activeForNode(peerMeta.node)>=concurrent)return {ok:false,error:`per-peer concurrency limit ${concurrent}`,queueable:true};
   return {ok:true,match,prompt,messages,tools,maxTokens:finalMax,estTokens:finalEst,grant,concurrent};
 }
+function ensureJobReplay(id){
+  let rec=state.jobReplay.get(id);
+  if(!rec){
+    rec={id,status:'received',ts:now(),result:null,watchers:new Map()};
+    state.jobReplay.set(id,rec);
+  }
+  rec.ts=now();
+  return rec;
+}
+function registerJobWatcher(id,wrapper,peerId){
+  const rec=ensureJobReplay(id);
+  if(wrapper&&peerId)rec.watchers.set(`${wrapper.key||wrapper.strategy||'route'}|${peerId}`,{wrapper,peerId});
+  return rec;
+}
+function replayTargets(id,wrapper=null,peerId=null){
+  const rec=ensureJobReplay(id);
+  if(wrapper&&peerId)registerJobWatcher(id,wrapper,peerId);
+  return [...rec.watchers.values()];
+}
 function sendJobState(wrapper,peerId,id,status,extra={}){
-  wrapper.actions.state.send({
+  const rec=registerJobWatcher(id,wrapper,peerId);
+  rec.status=status;rec.ts=now();
+  const payload={
     id,status,ts:now(),node:state.nodeId,
     active:state.activeRemoteJobs,capacity:state.maxJobs,
     queued:state.remoteQueue.length,maxQueue:state.maxQueue,...extra
-  },{target:peerId}).catch(()=>{});
+  };
+  for(const t of replayTargets(id))t.wrapper.actions.state.send(payload,{target:t.peerId}).catch(()=>{});
 }
+async function sendJobDelta(wrapper,peerId,id,payload){
+  registerJobWatcher(id,wrapper,peerId);
+  await Promise.allSettled(replayTargets(id).map(t=>t.wrapper.actions.delta.send({id,...payload},{target:t.peerId})));
+}
+async function sendJobResult(wrapper,peerId,result,status=null){
+  const id=result?.id;if(!id)return;
+  const rec=registerJobWatcher(id,wrapper,peerId);
+  rec.result=result;rec.status=status||(result.ok?'complete':'failed');rec.ts=now();
+  await Promise.allSettled(replayTargets(id).map(t=>t.wrapper.actions.result.send(result,{target:t.peerId})));
+}
+
 function enqueueRemoteJob(job){
   if(state.remoteQueue.length>=state.maxQueue)return false;
   const node=state.peers.get(job.peerId)?.node;
@@ -3591,7 +3625,7 @@ async function processRemoteQueue(){
   for(const job of state.remoteQueue){
     if(now()-job.enqueued>timeout){
       sendJobState(job.wrapper,job.peerId,job.data.id,'expired');
-      job.wrapper.actions.result.send({id:job.data.id,ok:false,error:'queue timeout exceeded'},{target:job.peerId}).catch(()=>{});
+      sendJobResult(job.wrapper,job.peerId,{id:job.data.id,ok:false,error:'queue timeout exceeded'},'failed').catch(()=>{});
     }else fresh.push(job);
   }
   state.remoteQueue=fresh;
@@ -3612,7 +3646,7 @@ async function processRemoteQueue(){
       if(!auth.queueable){
         state.remoteQueue.splice(i,1);
         sendJobState(job.wrapper,job.peerId,job.data.id,'rejected',{error:auth.error,retryAfterMs:auth.retryAfterMs||0});
-        job.wrapper.actions.result.send({id:job.data.id,ok:false,error:auth.error,retryAfterMs:auth.retryAfterMs||0},{target:job.peerId}).catch(()=>{});
+        sendJobResult(job.wrapper,job.peerId,{id:job.data.id,ok:false,error:auth.error,retryAfterMs:auth.retryAfterMs||0},'failed').catch(()=>{});
         progressed=true;break;
       }
     }
@@ -3640,13 +3674,13 @@ async function executeRemoteJob(job){
       reasoning_mode:reasoningModeForRequest(data.reasoning_mode||'auto'),
       response_mode:responseMode,chunk_size:chunkSize,
       on_delta:async delta=>{
-        await wrapper.actions.delta.send({id:data.id,delta,seq:seq++,mode:responseMode,ts:now()},{target:peerId}).catch(()=>{});
+        await sendJobDelta(wrapper,peerId,data.id,{delta,seq:seq++,mode:responseMode,ts:now()});
       }
     });
     const latencyMs=Math.max(1,Math.round(performance.now()-t0));
     const outputTokens=completion.completion_tokens||estimateTextTokens(completion.text);
     const sampleTps=updateProviderPerf(outputTokens,latencyMs);
-    await wrapper.actions.result.send({
+    await sendJobResult(wrapper,peerId,{
       id:data.id,ok:true,text:completion.text,model:auth.match.model,node:state.nodeId,
       latency_ms:latencyMs,
       output_tokens:outputTokens,
@@ -3660,10 +3694,10 @@ async function executeRemoteJob(job){
       response_mode:responseMode,
       chunk_size:responseMode==='chunked'?chunkSize:null,
       queue_ms:Math.max(0,(job.started||now())-(job.enqueued||now()))
-    },{target:peerId});
+    });
     sendJobState(wrapper,peerId,data.id,'complete');
   }catch(e){
-    wrapper.actions.result.send({id:data.id,ok:false,error:String(e.message||e)},{target:peerId}).catch(()=>{});
+    await sendJobResult(wrapper,peerId,{id:data.id,ok:false,error:String(e.message||e)},'failed');
     sendJobState(wrapper,peerId,data.id,'failed',{error:String(e.message||e)});
     log('err',`Mesh job failed: ${e.message}`);
   }finally{
@@ -3676,15 +3710,24 @@ async function handleRemoteInference(data,meta,wrapper){
   const peerId=meta.peerId;
   if(!data||typeof data!=='object'||!data.id)return;
   if(!ingressAllowed(peerId)){
-    wrapper.actions.result.send({id:data.id,ok:false,error:'ingress flood limit exceeded'},{target:peerId}).catch(()=>{});return;
+    sendJobResult(wrapper,peerId,{id:data.id,ok:false,error:'ingress flood limit exceeded'},'failed').catch(()=>{});return;
   }
   if(data.grant&&String(data.grant).length>12000){
-    wrapper.actions.result.send({id:data.id,ok:false,error:'capability token too large'},{target:peerId}).catch(()=>{});return;
+    sendJobResult(wrapper,peerId,{id:data.id,ok:false,error:'capability token too large'},'failed').catch(()=>{});return;
   }
   if(state.seenJobs.has(data.id)){
-    wrapper.actions.result.send({id:data.id,ok:false,error:'duplicate job id'},{target:peerId}).catch(()=>{});return;
+    const rec=registerJobWatcher(data.id,wrapper,peerId);
+    // A repeated stable job id is a retransmission after route churn, not an error.
+    if(rec.result){
+      wrapper.actions.result.send(rec.result,{target:peerId}).catch(()=>{});
+    }else{
+      sendJobState(wrapper,peerId,data.id,rec.status||'running',{retransmit:true});
+    }
+    return;
   }
   state.seenJobs.set(data.id,now());
+  const replay=registerJobWatcher(data.id,wrapper,peerId);
+  replay.status='received';
   const peerMeta=state.peers.get(peerId);
   const auth=await authorizeRemoteJob(peerMeta,data);
   if(!auth.ok){
@@ -3692,17 +3735,17 @@ async function handleRemoteInference(data,meta,wrapper){
       if(enqueueRemoteJob({peerId,wrapper,data,auth:null}))setTimeout(processRemoteQueue,0);
       else{
         sendJobState(wrapper,peerId,data.id,'rejected',{error:'queue full'});
-        wrapper.actions.result.send({id:data.id,ok:false,error:'queue full'},{target:peerId}).catch(()=>{});
+        sendJobResult(wrapper,peerId,{id:data.id,ok:false,error:'queue full'},'failed').catch(()=>{});
       }
       return;
     }
     sendJobState(wrapper,peerId,data.id,'rejected',{error:auth.error,retryAfterMs:auth.retryAfterMs||0});
-    wrapper.actions.result.send({id:data.id,ok:false,error:auth.error,retryAfterMs:auth.retryAfterMs||0},{target:peerId}).catch(()=>{});
+    sendJobResult(wrapper,peerId,{id:data.id,ok:false,error:auth.error,retryAfterMs:auth.retryAfterMs||0},'failed').catch(()=>{});
     return;
   }
   if(state.activeRemoteJobs>=state.maxJobs){
     if(state.maxQueue>0&&enqueueRemoteJob({peerId,wrapper,data,auth:null})){setTimeout(processRemoteQueue,0);return}
-    wrapper.actions.result.send({id:data.id,ok:false,error:'provider saturated; queue full/disabled'},{target:peerId}).catch(()=>{});return;
+    sendJobResult(wrapper,peerId,{id:data.id,ok:false,error:'provider saturated; queue full/disabled'},'failed').catch(()=>{});return;
   }
   executeRemoteJob({peerId,wrapper,data,auth,enqueued:now(),started:now()});
 }
@@ -3711,6 +3754,7 @@ function handleRemoteState(data,meta,wrapper){
   const p=state.pending.get(data.id);
   if(p){
     p.state=data;
+    p.lastStateAt=now();
     if(data.status==='queued')log('info',`Remote job ${data.id.slice(0,8)} queued at position ${data.position||'?'}.`);
     if(data.status==='running')log('info',`Remote job ${data.id.slice(0,8)} is running.`);
   }
@@ -3750,6 +3794,8 @@ function handleInferenceDelta(data,meta,wrapper){
   if(!data?.id||typeof data.delta!=='string')return;
   const pending=state.pending.get(data.id);
   if(!pending)return;
+  const sourceNode=state.peers.get(meta.peerId)?.node||null;
+  if(pending.providerNode&&sourceNode&&sourceNode!==pending.providerNode)return;
   pending.streamText=(pending.streamText||'')+data.delta;
   pending.lastDeltaAt=now();
   if(typeof pending.onDelta==='function'){
@@ -3762,6 +3808,11 @@ function handleInferenceResult(data,meta){
   if(!data?.id)return;
   const pending=state.pending.get(data.id);
   const peer=state.peers.get(meta.peerId);
+  const sourceNode=peer?.node||null;
+  if(pending?.providerNode&&sourceNode&&sourceNode!==pending.providerNode){
+    // Late completion from an abandoned provider attempt; ignore it.
+    return;
+  }
   if(peer&&data.ok){
     const sample=Number(data.tps)||0;
     const ema=Number(data.tps_ema)||sample;
@@ -3790,6 +3841,7 @@ function cleanupPeers(){
     else if(!connected)p.online=false;
   }
   for(const [id,ts] of state.seenJobs)if(now()-ts>10*60_000)state.seenJobs.delete(id);
+  for(const [id,rec] of state.jobReplay)if(now()-(rec.ts||0)>10*60_000)state.jobReplay.delete(id);
   for(const [key,c] of state.nknChunks)if(now()-c.ts>120_000)state.nknChunks.delete(key);
   for(const [nonce,ts] of state.nats.signalSeen)if(now()-ts>CONFIG.natsSignalMaxAgeMs*2)state.nats.signalSeen.delete(nonce);
   for(const [node,c] of [...state.nats.candidates])if(c.expires<now())state.nats.candidates.delete(node);
@@ -4521,42 +4573,173 @@ function roomForPeer(peerId){
   const naddr=nknAddrFromPeerId(peerId);if(naddr)return getNknWrapper(naddr);
   const rooms=[...state.rooms.values()].filter(w=>w.peers.has(peerId));return rooms[0]||null;
 }
+function markRouteSuspect(routeId,reason='transport failure'){
+  const p=state.peers.get(routeId);
+  if(p){
+    p.online=false;p.lastSeen=now();p.lastError=String(reason||'transport failure').slice(0,300);
+    p.suspectUntil=now()+2500;state.peers.set(routeId,p);
+  }
+  pruneNodeRoutes();renderPeers();refreshModelSelect();drawTopology();
+}
+function recoveryRequirements(requestMeta={}){
+  return {
+    tools:Array.isArray(requestMeta.tools)&&requestMeta.tools.length>0,
+    reasoning:reasoningModeForRequest(requestMeta.reasoning_mode||state.reasoningMode),
+    vision:!!requestMeta.requirements?.vision,
+    embedding:!!requestMeta.requirements?.embedding,
+    min_context:Number(requestMeta.requirements?.min_context)||0
+  };
+}
+function recoveryMeshProviders(model,requestMeta={},failedUntil=new Map()){
+  const req=recoveryRequirements(requestMeta);
+  const forAgent=!!requestMeta.agent;
+  return remoteModels()
+    .filter(p=>canonicalModelName(p.model)===canonicalModelName(model))
+    .filter(p=>!forAgent||p.agentPublicAccess||state.grants.has(p.providerNode))
+    .filter(p=>providerCapabilityPenalty(p,req)<1000)
+    .filter(p=>(failedUntil.get(p.providerNode)||0)<=now())
+    .sort((a,b)=>providerHealthScore(a,req)-providerHealthScore(b,req));
+}
+async function kickMeshRecovery(node=null){
+  if(!state.joined){
+    try{await joinMesh()}catch(_){}
+  }
+  broadcastHello();
+  if(state.natsEnabled){
+    publishNatsPresence().catch(()=>{});
+    try{maintainNatsRtcPeers()}catch(_){}
+  }
+  if(node&&state.nknEnabled&&state.nkn.connected){
+    const known=[...state.peers.values()].find(p=>p.node===node&&p.nknAddr);
+    if(known?.nknAddr)nknSendHello(known.nknAddr).catch(()=>{});
+  }
+  // Existing rooms may have learned a freshly reloaded peer; send identity immediately.
+  for(const w of state.rooms.values())sendHello(w).catch?.(()=>{});
+}
+function isRecoverableMeshError(err){
+  const msg=String(err?.message||err||'').toLowerCase();
+  return /message timeout|timed out|timeout|failed to send|no currently connected route|no route|transport|disconnected|connection|channel|peer.*left|route.*failed|networkerror|network error|provider saturated|queue full/.test(msg);
+}
 async function callRemote(peerId,model,prompt,providerNode=null,requestMeta={}){
+  const logicalId=String(requestMeta.job_id||uuid());
   const first=state.peers.get(peerId);
-  const node=providerNode||first?.node;
-  const routeIds=node?routesForNode(node):[peerId];
-  if(!routeIds.length)throw new Error('provider has no currently connected route');
-  const grant=node?state.grants.get(node):null;
-  let lastErr;
-  for(const routeId of routeIds){
+  const initialNode=providerNode||first?.node||null;
+  const deadline=now()+clamp(Number(requestMeta.recovery_timeout_ms)||CONFIG.requestTimeoutMs,15_000,CONFIG.requestTimeoutMs);
+  const failedUntil=new Map();
+  let preferredNode=initialNode;
+  let lastErr=null,attempt=0,recoveries=0;
+
+  const attemptRoute=async(provider,routeId)=>{
     const w=roomForPeer(routeId);
-    if(!w)continue;
-    const id=uuid();
-    try{
-      const response=await new Promise(async(resolve,reject)=>{
-        const timer=setTimeout(()=>{state.pending.delete(id);reject(new Error('remote inference timed out'))},CONFIG.requestTimeoutMs);
-        state.pending.set(id,{resolve,reject,timer,peerId:routeId,providerNode:node,started:now(),state:null,
-          onDelta:requestMeta.on_delta||null,streamText:'',lastDeltaAt:0});
-        try{
-          await w.actions.infer.send({
-            id,model,prompt,
-            messages:sanitizeInferenceMessages(requestMeta.messages,prompt),
-            tools:sanitizeRemoteTools(requestMeta.tools||[]),
-            grant:grant||null,agent:!!requestMeta.agent,
-            reasoning_mode:reasoningModeForRequest(requestMeta.reasoning_mode||state.reasoningMode),
-            response_mode:requestMeta.response_mode==='chunked'?'chunked':'stream',
-            chunk_size:clamp(Number(requestMeta.chunk_size)||state.responseChunkSize||CONFIG.defaultChunkSize,32,4096),
-            temperature:requestMeta.temperature??0.7,max_tokens:requestMeta.max_tokens??CONFIG.defaultMaxTokens
-          },{target:routeId});
-        }catch(e){clearTimeout(timer);state.pending.delete(id);reject(e)}
+    if(!w)throw new Error('provider route wrapper unavailable');
+    const node=provider.providerNode||state.peers.get(routeId)?.node||preferredNode;
+    const grant=node?state.grants.get(node):null;
+    attempt++;
+    return new Promise(async(resolve,reject)=>{
+      let settled=false;
+      const finish=(fn,val)=>{
+        if(settled)return;settled=true;
+        clearTimeout(timer);clearInterval(health);
+        const current=state.pending.get(logicalId);
+        if(current?.attempt===attempt)state.pending.delete(logicalId);
+        fn(val);
+      };
+      const remaining=Math.max(1000,deadline-now());
+      const timer=setTimeout(()=>finish(reject,new Error('remote inference timed out during recovery window')),remaining);
+      const health=setInterval(()=>{
+        const p=state.peers.get(routeId);
+        const liveSameNode=node?routesForNode(node).length>0:!!p?.online;
+        const pending=state.pending.get(logicalId);
+        const lastProgress=Math.max(pending?.lastDeltaAt||0,pending?.lastStateAt||0,pending?.started||0);
+        // If the selected peer refreshed or its transport vanished, recover quickly.
+        if(!liveSameNode&&now()-lastProgress>1200){
+          finish(reject,new Error('provider route disappeared during inference'));
+        }
+      },450);
+
+      state.pending.set(logicalId,{
+        resolve:v=>finish(resolve,v),reject:e=>finish(reject,e),
+        timer,health,peerId:routeId,providerNode:node,started:now(),attempt,
+        state:null,onDelta:requestMeta.on_delta||null,streamText:'',lastDeltaAt:0,lastStateAt:0
       });
-      return response;
-    }catch(e){
-      lastErr=e;
-      log('warn',`Route ${w.strategy}/${routeId.slice(0,8)} failed for ${node?.slice(0,10)||'peer'}; trying alternate route.`);
+      try{
+        await w.actions.infer.send({
+          id:logicalId,model,prompt,
+          messages:sanitizeInferenceMessages(requestMeta.messages,prompt),
+          tools:sanitizeRemoteTools(requestMeta.tools||[]),
+          grant:grant||null,agent:!!requestMeta.agent,
+          reasoning_mode:reasoningModeForRequest(requestMeta.reasoning_mode||state.reasoningMode),
+          response_mode:requestMeta.response_mode==='chunked'?'chunked':'stream',
+          chunk_size:clamp(Number(requestMeta.chunk_size)||state.responseChunkSize||CONFIG.defaultChunkSize,32,4096),
+          temperature:requestMeta.temperature??0.7,max_tokens:requestMeta.max_tokens??CONFIG.defaultMaxTokens
+        },{target:routeId});
+      }catch(e){finish(reject,e)}
+    });
+  };
+
+  while(now()<deadline){
+    const req=recoveryRequirements(requestMeta);
+    let provider=null;
+
+    // Prefer the same stable signed node after a refresh. Its transient route id may change.
+    if(preferredNode&&(failedUntil.get(preferredNode)||0)<=now()){
+      const same=remoteModels().filter(p=>
+        p.providerNode===preferredNode&&
+        canonicalModelName(p.model)===canonicalModelName(model)&&
+        providerCapabilityPenalty(p,req)<1000
+      );
+      provider=weightedHealthyPick(same,req);
+    }
+
+    // Transparent failover: any healthy provider advertising the exact model can continue.
+    if(!provider){
+      const candidates=recoveryMeshProviders(model,requestMeta,failedUntil);
+      provider=weightedHealthyPick(candidates,req);
+    }
+
+    if(!provider){
+      recoveries++;
+      await kickMeshRecovery(preferredNode);
+      log('warn',`Mesh recovery ${recoveries}: waiting for ${preferredNode?preferredNode.slice(0,10)+' or ':''}another ${model} provider to reappear.`);
+      await sleep(Math.min(1800,300+recoveries*140));
+      continue;
+    }
+
+    const node=provider.providerNode;
+    const routes=routesForNode(node);
+    if(!routes.length){
+      failedUntil.set(node,now()+1200);
+      await kickMeshRecovery(node);await sleep(300);continue;
+    }
+
+    let providerFailed=true;
+    for(const routeId of routes){
+      if(now()>=deadline)break;
+      try{
+        const response=await attemptRoute(provider,routeId);
+        if(recoveries)log('ok',`Recovered inference job ${logicalId.slice(0,8)} after ${recoveries} mesh recovery cycle${recoveries===1?'':'s'}.`);
+        return response;
+      }catch(e){
+        lastErr=e;
+        markRouteSuspect(routeId,e?.message||e);
+        log('warn',`Route ${routeId.slice(0,8)} for ${node.slice(0,10)} failed (${String(e?.message||e).slice(0,120)}); recovering transparently.`);
+        if(!isRecoverableMeshError(e)){
+          // Policy/model errors can still be served by a different provider of the same model.
+          failedUntil.set(node,now()+4000);
+        }
+      }
+    }
+
+    if(providerFailed){
+      failedUntil.set(node,now()+1500);
+      recoveries++;
+      preferredNode=initialNode; // keep checking original refreshed identity in parallel with alternatives
+      await kickMeshRecovery(node);
+      await sleep(Math.min(1500,250+recoveries*120));
     }
   }
-  throw lastErr||new Error('all direct provider routes failed');
+
+  throw new Error(`mesh recovery window exhausted for ${model}${lastErr?`: ${lastErr.message||lastErr}`:''}`);
 }
 
 
@@ -4893,7 +5076,7 @@ const OIM_AGENT_MANIFEST={
   tools:['get_api_docs','get_state','list_chat_sessions','get_chat_session','create_chat_session','activate_chat_session','delete_chat_session','list_browser_tools','set_browser_tools','run_browser_tool','probe_endpoint_capabilities','list_models','scan_local','add_endpoint','join_mesh','leave_mesh','run_inference','accept_peer','deny_peer','set_peer_enabled','set_provider_policy','connect_nkn','set_rendezvous','issue_capability','import_capability','announce','create_manual_offer','answer_manual_offer','accept_manual_answer','get_deployment_guide']
 };
 function safeEndpointState(ep){return {url:ep.url,label:ep.label,status:ep.status,type:ep.type||null,latency_ms:ep.latency??null,models:[...(ep.models||[])],capabilities:ep.capabilities?{status:ep.capabilities.status,tools_native:!!ep.capabilities.toolsNative,tools_mode:ep.capabilities.toolsNative?'native':'browser-prompt-fallback',reasoning_style:ep.capabilities.reasoningStyle||'server',probed_at:ep.capabilities.probedAt||null}:null,last_seen:ep.lastSeen||null,error:ep.error||null}}
-function agentSnapshot(){return {protocol:'open-inference-mesh',version:7,timestamp:now(),secure_context:window.isSecureContext,response_delivery:{default:state.responseMode||'stream',supported:['stream','chunked'],chunk_size:state.responseChunkSize||CONFIG.defaultChunkSize},reasoning:{mode:state.reasoningMode||'auto',endpoint_control:'auto-probed'},browser_tools:{enabled:state.toolsEnabled,max_rounds:null,tools:browserToolState()},node:{id:state.nodeId,identity_algorithm:state.identity?.alg||null,mesh_joined:state.joined,nkn_enabled:state.nknEnabled,nkn_status:state.nkn.status,nkn_address:state.nkn.addr||null},chat:{active_session:state.chatSessionId,title:state.chatSession?.title||null,messages:state.chatSession?.transcript?.length||0,persistence:'IndexedDB with localStorage fallback'},routing:{default:'balanced',policy:'capability-fit then health-weighted selection across near-best providers',load_balancing:true},model_catalog:consolidatedModels().map(m=>({model:m.model,providers:m.providers.length,local:m.local,mesh:m.mesh,capabilities:m.capabilities})),provider:{advertise:state.advertise,share:state.share,public_agent_gateway:state.agentPublicAccess,
+function agentSnapshot(){return {protocol:'open-inference-mesh',version:7,timestamp:now(),secure_context:window.isSecureContext,response_delivery:{default:state.responseMode||'stream',supported:['stream','chunked'],chunk_size:state.responseChunkSize||CONFIG.defaultChunkSize},reasoning:{mode:state.reasoningMode||'auto',endpoint_control:'auto-probed'},browser_tools:{enabled:state.toolsEnabled,max_rounds:null,tools:browserToolState()},node:{id:state.nodeId,identity_algorithm:state.identity?.alg||null,mesh_joined:state.joined,nkn_enabled:state.nknEnabled,nkn_status:state.nkn.status,nkn_address:state.nkn.addr||null},chat:{active_session:state.chatSessionId,title:state.chatSession?.title||null,messages:state.chatSession?.transcript?.length||0,persistence:'IndexedDB with localStorage fallback'},routing:{default:'balanced',policy:'capability-fit then health-weighted selection across near-best providers with stable-job route recovery and automatic provider failover',load_balancing:true,recovery:'stable NodeID re-resolution + route quarantine + replay-safe retries + exact-model provider failover'},model_catalog:consolidatedModels().map(m=>({model:m.model,providers:m.providers.length,local:m.local,mesh:m.mesh,capabilities:m.capabilities})),provider:{advertise:state.advertise,share:state.share,public_agent_gateway:state.agentPublicAccess,
 tokens_per_second:Number(state.providerPerf.tpsEma)||0,last_sample_tokens_per_second:Number(state.providerPerf.lastTps)||0,
 performance_timestamp:Number(state.providerPerf.lastCompletedAt)||0,inference_active:state.activeRemoteJobs>0,access_mode:state.accessMode,served_models:state.serveModels,max_active:state.maxJobs,max_queue:state.maxQueue,peer_active_limit:state.perPeerConcurrent,peer_queue_limit:state.perPeerQueue,rpm_limit:state.rpmLimit,estimated_tpm_limit:state.tpmLimit,max_remote_output_tokens:state.maxRemoteTokens,queue_timeout_sec:state.queueTimeoutSec,active_jobs:state.activeRemoteJobs,queued_jobs:state.remoteQueue.length},endpoints:[...state.endpoints.values()].map(safeEndpointState),local_models:localModels().map(x=>({model:x.model,endpoint:x.endpoint,label:x.label,capabilities:x.capabilities,active:x.load,capacity:x.capacity,latency_ms:x.latency})),remote_models:remoteModels().map(x=>{
   const peer=state.peers.get(x.peerId);
@@ -5161,7 +5344,8 @@ function agentApiDocs(){
     routing:{
       default:'auto balanced',
       behavior:'For a selected model name, OIM consolidates all local endpoints and signed peers that report that model. Each inference/tool round filters by requested capabilities, scores live utilization, queue pressure, throughput and latency, then randomly selects among near-best healthy providers.',
-      benefit:'Avoids a deterministic hotspot while naturally shifting new work away from saturated or slow nodes. A single generation stays on one provider, while independent requests and stateless tool-loop rounds may use different providers.'
+      benefit:'Avoids a deterministic hotspot while naturally shifting new work away from saturated or slow nodes. A single generation stays on one provider, while independent requests and stateless tool-loop rounds may use different providers.',
+      recovery:'Transport/message timeouts and peer refreshes are treated as transient. The requester re-resolves the stable signed NodeID, refreshes discovery, retries over fresh WebRTC/NKN routes, and may fail over to another healthy provider of the exact model. Stable job IDs plus provider replay/watchers prevent duplicate-job hard failures.'
     },
     provider_behavior:{
       local_first:true,
