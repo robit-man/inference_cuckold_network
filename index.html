@@ -7,7 +7,7 @@
 <meta name="description" content="Open Inference Mesh: a static-hostable, local-first peer-to-peer intelligence commons. People and agents can discover shared inference, use it within provider limits, and voluntarily contribute locally owned models so useful machine intelligence becomes broadly accessible rather than dependent on a single institution.">
 <meta name="robots" content="index,follow">
 <meta name="application-name" content="Open Inference Mesh">
-<meta name="oim-protocol" content="open-inference-mesh-v7.22">
+<meta name="oim-protocol" content="open-inference-mesh-v7.24">
 <meta name="agent-interface" content="WebMCP, window.OIM, same-origin postMessage RPC, CustomEvent RPC">
 <link rel="help" href="?api=docs" title="Open Inference Mesh machine API documentation">
 <link rel="alternate" type="application/json" href="?api=docs" title="OIM agent API">
@@ -3387,15 +3387,11 @@ async function joinMesh(){
     clearTimeout(state.nknLazyTimer);
     state.nknLazyTimer=null;
     if(state.nknEnabled&&!state.nkn.connected){
+      // Standby means exactly standby. Do not auto-dial NKN on a timer:
+      // NATS/WebRTC verification can legitimately take >12s, which previously
+      // raced healthy primary discovery and produced ConnectToNodeTimeoutError.
       state.nkn.status='standby';
-      setNknStatus('standby','lazy fallback');
-      state.nknLazyTimer=setTimeout(async()=>{
-        state.nknLazyTimer=null;
-        if(!state.joined||!state.nknEnabled||state.nkn.connected)return;
-        const verified=stablePeerGroups().length;
-        const primaryRoutes=[...state.peers.values()].filter(p=>p.online&&p.verified&&p.strategy!=='nkn').length;
-        if(!verified||!primaryRoutes)await startNkn();
-      },12000);
+      setNknStatus('standby','on-demand fallback');
     }
 
     if($('#discoveryMode').value==='sharded')state.exploreTimer=setInterval(()=>rotateExploreRooms(),CONFIG.exploreIntervalMs);
@@ -3847,6 +3843,8 @@ function installNknConsoleGuard(){
       text.includes('nkn sdk')||
       text.includes('mainnet-rpc-node')||
       text.includes('seed.nkn')||
+      text.includes('connecttonodetimeouterror')||
+      text.includes('connect to node timeout')||
       (text.includes('rpc call failed')&&text.includes('rpc-node'))
     )?text:'';
   };
@@ -4825,8 +4823,15 @@ function sendJobDelta(wrapper,peerId,id,payload){
 }
 async function sendJobResult(wrapper,peerId,result,status=null){
   const id=result?.id;if(!id)return;
-  // Drain any coalesced content before the final result frame.
-  await flushJobStreamFrames(id);
+
+  // The full final text is carried in the result itself, so terminal delivery
+  // must outrank best-effort delta ordering. Bound stream flushing tightly;
+  // never allow a stuck delta route/watcher to hold the final result hostage.
+  await Promise.race([
+    flushJobStreamFrames(id),
+    sleep(350)
+  ]).catch(()=>{});
+
   const rec=registerJobWatcher(id,wrapper,peerId);
   rec.result=result;rec.status=status||(result.ok?'complete':'failed');rec.ts=now();
 
@@ -4841,6 +4846,15 @@ async function sendJobResult(wrapper,peerId,result,status=null){
         sleep(1800).then(()=>{throw new Error('primary result send timeout')})
       ]);
     }catch(_){}
+
+    // Small duplicate terminal frame is intentional. Results are idempotent by
+    // stable job ID and far more important than preserving exactly-once packet
+    // delivery over an unreliable browser route.
+    setTimeout(()=>{
+      Promise.resolve(
+        primary.wrapper.actions.result.send(result,{target:primary.peerId})
+      ).catch(()=>{});
+    },180);
   }
   for(const t of others){
     Promise.resolve(t.wrapper.actions.result.send(result,{target:t.peerId})).catch(()=>{});
@@ -5017,21 +5031,12 @@ async function executeRemoteJob(job){
     const inputTokens=Number(completion.prompt_tokens||completion.usage?.prompt_tokens)||Math.max(1,Math.ceil(JSON.stringify(auth.messages||[]).length/4));
     const totalWorkTokens=Math.max(1,Number(completion.total_tokens||completion.usage?.total_tokens)||(inputTokens+outputTokens));
     const sampleTps=updateProviderPerf(outputTokens,latencyMs);
-    const meritCharge=await makeMeritReceipt('leech',peerMeta.node,{
-      job_id:data.id,model:auth.match.model,tokens:totalWorkTokens,tps:sampleTps,latency_ms:latencyMs,caps:auth.match.capabilities||{}
-    });
-    await recordMeritReceipt(meritCharge);
-    recordProviderEarned({
-      job_id:data.id,requester:peerMeta.node,model:auth.match.model,
-      tokens:totalWorkTokens,units:meritCharge.units,tps:sampleTps
-    });
-    await sendJobResult(wrapper,peerId,{
+    const baseResult={
       id:data.id,ok:true,text:completion.text,model:auth.match.model,node:state.nodeId,
       latency_ms:latencyMs,
       output_tokens:outputTokens,
       tps:Number(sampleTps.toFixed(2)),
       tps_ema:Number(state.providerPerf.tpsEma.toFixed(2)),
-      merit_units:meritCharge.units,merit_receipt:meritCharge,
       usage:completion.usage||null,
       tool_calls:completion.tool_calls||[],
       tools_mode:completion.tools_mode||'off',
@@ -5041,9 +5046,41 @@ async function executeRemoteJob(job){
       chunk_size:responseMode==='chunked'?chunkSize:null,
       queue_ms:Math.max(0,(job.started||now())-(job.enqueued||now())),
       compatibility_fallback:!!completion.compat_fallback
-    });
+    };
+
+    // User-visible inference is the critical path. Send the complete result
+    // before signing/persisting merit receipts.
+    await sendJobResult(wrapper,peerId,baseResult);
     sendJobState(wrapper,peerId,data.id,'complete');
     finishServingTelemetry(peerMeta.node,{ok:true,tps:sampleTps,model:auth.match.model,jobId:data.id});
+
+    // Merit accounting is detached. A later replay can carry the base result;
+    // receipt exchange is recoverable independently and must never stall answer delivery.
+    (async()=>{
+      try{
+        const meritCharge=await makeMeritReceipt('leech',peerMeta.node,{
+          job_id:data.id,model:auth.match.model,tokens:totalWorkTokens,tps:sampleTps,
+          latency_ms:latencyMs,caps:auth.match.capabilities||{}
+        });
+        await recordMeritReceipt(meritCharge);
+        recordProviderEarned({
+          job_id:data.id,requester:peerMeta.node,model:auth.match.model,
+          tokens:totalWorkTokens,units:meritCharge.units,tps:sampleTps
+        });
+
+        // Update replay cache with enriched result for subsequent replay/receipt recovery.
+        const rec=ensureJobReplay(data.id);
+        rec.result={...baseResult,merit_units:meritCharge.units,merit_receipt:meritCharge};
+        rec.ts=now();
+
+        // Send enriched terminal frame best-effort; requester already has answer.
+        Promise.resolve(
+          wrapper.actions.result.send(rec.result,{target:peerId})
+        ).catch(()=>{});
+      }catch(e){
+        log('warn',`Provider merit accounting deferred: ${String(e.message||e).slice(0,140)}`);
+      }
+    })();
   }catch(e){
     await sendJobResult(wrapper,peerId,{id:data.id,ok:false,error:String(e.message||e)},'failed');
     sendJobState(wrapper,peerId,data.id,'failed',{error:String(e.message||e)});
@@ -5115,6 +5152,7 @@ async function handleRemoteInference(data,meta,wrapper){
 function handleRemoteState(data,meta,wrapper){
   if(!data?.id)return;
   const p=state.pending.get(data.id);
+  if(p&&!pendingSourceAllowed(p,meta,wrapper))return;
   if(p){
     p.state=data;
     p.lastStateAt=now();
@@ -5138,7 +5176,17 @@ function handleRemoteState(data,meta,wrapper){
         log('info',`Remote job ${data.id.slice(0,8)} reasoning · ${p.reasoningChars} chars received upstream.`);
       }
     }
-    if(data.status==='rejected'&&data.error){
+    if(data.status==='complete'){
+      // Result is sent before complete state. If complete arrives while the job
+      // is still pending, the terminal result packet was lost/dropped. Re-send
+      // the SAME job ID; provider replay cache returns the result without
+      // generating twice.
+      setTimeout(()=>{
+        const current=state.pending.get(data.id);
+        if(current===p)requestPendingResultReplay(current,'complete-without-result');
+      },60);
+    }
+    if((data.status==='failed'||data.status==='expired'||data.status==='rejected')&&data.error){
       const err=new Error(String(data.error));
       err.retryAfterMs=Number(data.retryAfterMs)||0;
       setTimeout(()=>{
@@ -5180,12 +5228,53 @@ async function sendGrantToPeer(peerId){
   return token;
 }
 
+
+function pendingSourceAllowed(pending,meta,wrapper){
+  if(!pending)return false;
+  const routeId=String(meta?.peerId||'');
+  if(!routeId)return false;
+
+  // Exact route used for this attempt is always valid.
+  if(routeId===pending.peerId)return true;
+
+  const peer=state.peers.get(routeId);
+  const sourceNode=peer?.node||wrapper?.remoteNode||null;
+
+  // Stable signed identity is the primary authorization boundary.
+  if(pending.providerNode&&sourceNode===pending.providerNode)return true;
+
+  // Recovery/replay may legitimately return on a different verified route for
+  // the same stable node.
+  const aliases=state.nodeRoutes.get(pending.providerNode);
+  if(aliases?.has(routeId)){
+    const ap=state.peers.get(routeId);
+    if(ap?.verified&&ap.node===pending.providerNode)return true;
+  }
+
+  return false;
+}
+function requestPendingResultReplay(pending,reason='stalled'){
+  if(!pending||typeof pending.requestReplay!=='function')return false;
+  const t=now();
+  if(t-Number(pending.lastReplayAt||0)<2500)return false;
+  pending.lastReplayAt=t;
+  pending.replayCount=(Number(pending.replayCount)||0)+1;
+  Promise.resolve(pending.requestReplay(reason)).catch(()=>{});
+  return true;
+}
+
 function handleInferenceDelta(data,meta,wrapper){
   if(!data?.id||typeof data.delta!=='string')return;
   const pending=state.pending.get(data.id);
   if(!pending)return;
-  const sourceNode=state.peers.get(meta.peerId)?.node||null;
-  if(pending.providerNode&&sourceNode&&sourceNode!==pending.providerNode)return;
+  if(!pendingSourceAllowed(pending,meta,wrapper)){
+    discoveryWarnLimited(
+      `delta-source:${data.id}:${meta.peerId}`,
+      `Ignored inference delta ${data.id.slice(0,8)} from unrelated route ${String(meta.peerId).slice(0,16)}.`,
+      15000
+    );
+    return;
+  }
   pending.streamText=(pending.streamText||'')+data.delta;
   pending.lastDeltaAt=now();
   state.streamDiag.rxDeltas++;
@@ -5204,9 +5293,16 @@ function handleInferenceResult(data,meta,wrapper){
   if(!data?.id)return;
   const pending=state.pending.get(data.id);
   const peer=state.peers.get(meta.peerId);
-  const sourceNode=peer?.node||null;
+  const sourceNode=peer?.node||wrapper?.remoteNode||null;
 
-  if(pending?.providerNode&&sourceNode&&sourceNode!==pending.providerNode)return;
+  if(pending&&!pendingSourceAllowed(pending,meta,wrapper)){
+    discoveryWarnLimited(
+      `result-source:${data.id}:${meta.peerId}`,
+      `Ignored inference result ${data.id.slice(0,8)} from unrelated route ${String(meta.peerId).slice(0,16)}.`,
+      15000
+    );
+    return;
+  }
 
   if(peer&&data.ok){
     peer.suspectUntil=0;peer.routeFailures=0;peer.lastError='';
@@ -5596,7 +5692,7 @@ function renderRouterState(){
   box.append(nat);
   const nd=document.createElement('div');nd.className='statline';
   const nknRoutes=[...state.peers.values()].filter(p=>p.online&&p.verified&&p.strategy==='nkn').length;
-  nd.innerHTML=`<span>NKN</span><span>${esc(state.nkn.status)} · ${nknRoutes} signed fallback route(s) · tx ${state.nknTxStats.messages}${state.nkn.addr?' · '+esc(state.nkn.addr).slice(0,18)+'…':''}</span>`;
+  nd.innerHTML=`<span>NKN</span><span>${esc(state.nkn.status)}${state.nkn.status==='standby'?' · on-demand':''} · ${nknRoutes} signed fallback route(s) · tx ${state.nknTxStats.messages}${state.nkn.addr?' · '+esc(state.nkn.addr).slice(0,18)+'…':''}</span>`;
   box.append(nd);
   const manualRooms=[...state.rooms.values()].filter(w=>w.strategy==='manual');
   const manualRoutes=manualRooms.reduce((n,w)=>n+w.peers.size,0);
@@ -6338,12 +6434,11 @@ async function kickMeshRecovery(node=null){
   }
 
   if(node&&state.nknEnabled){
-    if(!state.nkn.connected){
-      await startNkn().catch(()=>false);
-    }
-    if(state.nkn.connected){
-      const known=[...state.peers.values()].find(p=>p.node===node&&p.nknAddr);
-      if(known?.nknAddr)nknSendHello(known.nknAddr).catch(()=>{});
+    const known=[...state.peers.values()].find(p=>p.node===node&&p.nknAddr);
+    // No advertised NKN destination = no useful reason to start the SDK.
+    if(known?.nknAddr){
+      if(!state.nkn.connected)await startNkn().catch(()=>false);
+      if(state.nkn.connected)nknSendHello(known.nknAddr).catch(()=>{});
     }
   }
 
@@ -6401,18 +6496,35 @@ async function callRemote(peerId,model,prompt,providerNode=null,requestMeta={}){
       const health=setInterval(()=>{
         const pending=state.pending.get(logicalId);
         const lastProgress=Math.max(pending?.lastDeltaAt||0,pending?.lastStateAt||0,pending?.started||0);
+        const idleFor=now()-lastProgress;
+
         // Recover only when the actual selected transport disappears.
         // Request quarantine does not imply peer presence loss.
-        if(!routeTransportConnected(routeId)&&now()-lastProgress>1200){
+        if(!routeTransportConnected(routeId)&&idleFor>1200){
           finish(reject,new Error('provider route disappeared during inference'));
+          return;
         }
-      },450);
+
+        // Once a provider has acknowledged/runs a job, do not sit silently for
+        // four minutes if a later result/state packet was lost. Re-send the
+        // same stable job ID. Provider-side seenJobs/jobReplay makes this a
+        // status/result replay, not duplicate inference.
+        if(
+          pending&&routeTransportConnected(routeId)&&
+          (pending.deliveryAckAt||pending.lastStateAt)&&
+          idleFor>10000&&
+          now()-Number(pending.lastReplayAt||0)>8000
+        ){
+          requestPendingResultReplay(pending,'stalled-progress');
+        }
+      },500);
 
       state.pending.set(logicalId,{
         resolve:v=>finish(resolve,v),reject:e=>finish(reject,e),
         timer,health,peerId:routeId,providerNode:node,started:now(),attempt,
         state:null,onDelta:requestMeta.on_delta||null,streamText:'',
-        lastDeltaAt:0,lastStateAt:0,deliveryAckAt:0,minimalRetrySent:false
+        lastDeltaAt:0,lastStateAt:0,deliveryAckAt:0,minimalRetrySent:false,
+        lastReplayAt:0,replayCount:0,requestReplay:null
       });
       const advancedEnvelope={
         id:logicalId,model,prompt,
@@ -6436,6 +6548,17 @@ async function callRemote(peerId,model,prompt,providerNode=null,requestMeta={}){
         max_tokens:requestMeta.max_tokens??CONFIG.defaultMaxTokens,
         compatibility_envelope:true
       };
+
+      const currentPending=state.pending.get(logicalId);
+      if(currentPending?.attempt===attempt){
+        currentPending.requestReplay=async reason=>{
+          if(!routeTransportConnected(routeId))throw new Error('replay route unavailable');
+          state.streamDiag.inferTx++;
+          state.streamDiag.lastInferTxAt=now();
+          log('info',`Requesting replay for ${logicalId.slice(0,8)} · ${reason}.`);
+          return w.actions.infer.send(minimalEnvelope,{target:routeId});
+        };
+      }
 
       try{
         state.streamDiag.inferTx++;
