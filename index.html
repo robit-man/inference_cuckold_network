@@ -7,13 +7,13 @@
 <meta name="description" content="Open Inference Mesh: a static-hostable, local-first, peer-to-peer inference discovery and sharing node with signed identities, scoped capability access, WebRTC and NKN fallback routing.">
 <meta name="robots" content="index,follow">
 <meta name="application-name" content="Open Inference Mesh">
-<meta name="oim-protocol" content="open-inference-mesh-v5">
+<meta name="oim-protocol" content="open-inference-mesh-v6.1">
 <meta name="agent-interface" content="WebMCP, window.OIM, same-origin postMessage RPC, CustomEvent RPC">
 <title>OPEN INFERENCE MESH</title>
 <script type="application/ld+json" id="oimJsonLd">
 {"@context":"https://schema.org","@type":"SoftwareApplication","name":"Open Inference Mesh","applicationCategory":"DeveloperApplication","operatingSystem":"Any modern HTTPS browser","description":"A backendless browser node for discovering, routing, serving, and consuming locally owned and peer-to-peer machine inference.","isAccessibleForFree":true,"featureList":["Local model discovery","Global NATS rendezvous and multi-plane WebRTC discovery","NKN encrypted overlay fallback","Signed peer identities","Scoped inference capabilities","Queue and rate limits","WebMCP agent tools"]}
 </script>
-<script type="application/json" id="oimStaticAgentManifest">{"protocol":"open-inference-mesh","version":5,"preferred_interface":"WebMCP","agent_interfaces":["WebMCP","window.OIM","same-origin postMessage","CustomEvent"],"security":"Agent-readable state excludes endpoint API keys, NKN seed material, and capability-token contents."}</script>
+<script type="application/json" id="oimStaticAgentManifest">{"protocol":"open-inference-mesh","version":6,"preferred_interface":"WebMCP","agent_interfaces":["WebMCP","window.OIM","same-origin postMessage","CustomEvent"],"security":"Agent-readable state excludes endpoint API keys, NKN seed material, and capability-token contents."}</script>
 <style>
 :root{
   --bg:#090a0b;
@@ -209,10 +209,52 @@ textarea.compact{min-height:55px;resize:vertical}
 .agent-tool p{margin:4px 0 0;font:9px/1.5 var(--mono);color:var(--muted)}
 .agent-ready{border-color:#365c44;color:var(--good)}
 .sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
+
+/* v6 simplified peer UX */
+.offer-stack{display:flex;flex-direction:column;gap:7px;margin-top:8px}
+.offer-card{
+  border:1px solid #4b4120;background:#14120c;padding:10px;position:relative
+}
+.offer-card .title{font:800 10px var(--mono);color:var(--text);display:flex;align-items:center;gap:7px}
+.offer-card .sub{font:9px/1.45 var(--mono);color:var(--muted);margin-top:5px}
+.offer-actions{display:flex;gap:6px;margin-top:9px}
+.peer-simple{
+  border:1px solid var(--line);background:#0c0e10;padding:10px;margin-top:7px
+}
+.peer-simple.accepted{border-left:2px solid var(--good)}
+.peer-simple.denied{opacity:.58;border-left:2px solid var(--bad)}
+.peer-simple.pending{border-left:2px solid var(--warn)}
+.peer-simple .peer-top{display:flex;align-items:center;gap:7px}
+.peer-simple .peer-name{font:800 10px var(--mono);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.peer-simple .peer-meta{font:9px/1.45 var(--mono);color:var(--muted);margin-top:5px}
+.peer-simple .peer-models{font:9px/1.45 var(--mono);color:var(--dim);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.peer-buttons{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+.btn.accept{border-color:#376a4f;color:var(--good)}
+.btn.deny{border-color:#6d3636;color:var(--bad)}
+.btn.enabled{background:#162019;border-color:#376a4f;color:var(--good)}
+.peer-count{
+  min-width:18px;height:18px;padding:0 5px;border:1px solid #665021;background:#241c0c;
+  color:var(--accent);font:800 9px/16px var(--mono);text-align:center
+}
+.notice-empty{border:1px dashed var(--line);padding:10px;text-align:center;font:9px/1.5 var(--mono);color:var(--dim)}
+.toast-stack{position:fixed;right:16px;top:70px;z-index:50;width:min(360px,calc(100vw - 32px));display:flex;flex-direction:column;gap:7px;pointer-events:none}
+.toast{
+  border:1px solid #5a4720;background:#15120b;box-shadow:0 12px 32px rgba(0,0,0,.35);
+  padding:10px;pointer-events:auto
+}
+.toast .toast-title{font:800 10px var(--mono);color:var(--text)}
+.toast .toast-sub{font:9px/1.45 var(--mono);color:var(--muted);margin-top:4px}
+.toast .toast-actions{display:flex;gap:6px;margin-top:8px}
+.simple-status{display:flex;align-items:center;gap:7px;font:9px var(--mono);color:var(--muted)}
+.advanced-box{border-top:1px solid var(--line);margin-top:8px}
+.advanced-box summary{padding:9px 0;font:800 9px var(--mono);color:var(--dim);cursor:pointer;letter-spacing:.08em;text-transform:uppercase}
+.advanced-box[open] summary{color:var(--muted)}
+
 </style>
 </head>
 <body>
 <div id="app">
+  <div id="peerToasts" class="toast-stack" aria-live="polite"></div>
   <header class="topbar">
     <div class="brand"><b>OPEN</b> / INFERENCE MESH</div>
     <div class="topstats">
@@ -271,68 +313,76 @@ textarea.compact{min-height:55px;resize:vertical}
       </section>
 
       <section class="section">
-        <h2>Inference distribution / access</h2>
+        <h2>Share your inference</h2>
+
         <div class="switch">
           <div>
-            <div class="mini" style="color:var(--text)">Advertise models</div>
-            <div class="mini">signed capability + queue state</div>
+            <div class="mini" style="color:var(--text)">Visible on mesh</div>
+            <div class="mini">advertise installed models</div>
           </div>
           <button id="advertiseToggle" class="toggle on" aria-label="Advertise models"></button>
         </div>
+
         <div class="switch">
           <div>
-            <div class="mini" style="color:var(--text)">Share inference</div>
-            <div class="mini">serve scoped inference jobs</div>
+            <div class="mini" style="color:var(--text)">Serve accepted peers</div>
+            <div class="mini">accepted peers may use enabled models</div>
           </div>
           <button id="shareToggle" class="toggle" aria-label="Share inference"></button>
         </div>
 
-        <div class="label">Access policy</div>
-        <select id="accessMode" class="field">
-          <option value="capability" selected>CAPABILITY GRANT ONLY</option>
-          <option value="allowlist">ALLOWLIST + CAPABILITY GRANTS</option>
-          <option value="verified">ANY VERIFIED MESH IDENTITY</option>
-        </select>
+        <div class="label">Models peers may use</div>
+        <input id="serveModels" class="field" value="*" placeholder="* = all installed models">
 
-        <div class="label">Served model scope</div>
-        <input id="serveModels" class="field" value="*" placeholder="* or exact model-a,model-b">
-
-        <div class="label">Concurrency / queue</div>
-        <div class="control-grid">
-          <div><div class="mini">global active</div><input id="maxJobs" class="field" type="number" min="1" max="32" value="2"></div>
-          <div><div class="mini">global queued</div><input id="maxQueue" class="field" type="number" min="0" max="256" value="16"></div>
-          <div><div class="mini">peer active</div><input id="perPeerConcurrent" class="field" type="number" min="1" max="16" value="1"></div>
-          <div><div class="mini">peer queued</div><input id="perPeerQueue" class="field" type="number" min="0" max="64" value="4"></div>
+        <div id="shareSummary" class="simple-status" style="margin-top:8px">
+          <span class="status-dot warn"></span><span>sharing disabled</span>
         </div>
 
-        <div class="label">Sliding-window limits / peer</div>
-        <div class="control-grid">
-          <div><div class="mini">requests / min</div><input id="rpmLimit" class="field" type="number" min="1" max="10000" value="12"></div>
-          <div><div class="mini">est. tokens / min</div><input id="tpmLimit" class="field" type="number" min="256" max="10000000" value="32768"></div>
-        </div>
-        <div class="control-grid" style="margin-top:7px">
-          <div><div class="mini">max output tokens</div><input id="maxRemoteTokens" class="field" type="number" min="16" max="65536" value="4096"></div>
-          <div><div class="mini">queue timeout sec</div><input id="queueTimeoutSec" class="field" type="number" min="5" max="3600" value="120"></div>
-        </div>
+        <details class="advanced-box">
+          <summary>Advanced access + rate limits</summary>
+          <div class="details-body" style="padding:0">
+            <div class="label">Access policy</div>
+            <select id="accessMode" class="field">
+              <option value="capability" selected>ACCEPTED / GRANTED PEERS</option>
+              <option value="allowlist">ALLOWLIST OR GRANT</option>
+              <option value="verified">ANY VERIFIED PEER</option>
+            </select>
 
-        <div class="label">Capability grants</div>
-        <div class="control-grid">
-          <div><div class="mini">grant lifetime hours</div><input id="grantHours" class="field" type="number" min="1" max="8760" value="24"></div>
-          <div><div class="mini">model scope</div><input id="grantModels" class="field" value="*" placeholder="* or model-a,model-b"></div>
-        </div>
-        <div class="row" style="margin-top:7px">
-          <input id="grantImport" class="field" placeholder="paste signed OIM capability token">
-          <button id="importGrantBtn" class="btn small">import</button>
-        </div>
-        <div id="grantSummary" class="mini" style="margin-top:6px">0 imported grants · 0 allowlisted identities</div>
+            <div class="label">Concurrency / queue</div>
+            <div class="control-grid">
+              <div><div class="mini">global active</div><input id="maxJobs" class="field" type="number" min="1" max="32" value="2"></div>
+              <div><div class="mini">global queued</div><input id="maxQueue" class="field" type="number" min="0" max="256" value="16"></div>
+              <div><div class="mini">peer active</div><input id="perPeerConcurrent" class="field" type="number" min="1" max="16" value="1"></div>
+              <div><div class="mini">peer queued</div><input id="perPeerQueue" class="field" type="number" min="0" max="64" value="4"></div>
+            </div>
 
-        <div class="callout bad">
-          Local API keys are never sent to peers. Shared service is inference-only: no arbitrary URL proxy, filesystem access, shell, or tool execution. Capability tokens are identity-bound and signed by the serving node.
-        </div>
+            <div class="label">Per-peer minute limits</div>
+            <div class="control-grid">
+              <div><div class="mini">requests</div><input id="rpmLimit" class="field" type="number" min="1" max="10000" value="12"></div>
+              <div><div class="mini">est. tokens</div><input id="tpmLimit" class="field" type="number" min="256" max="10000000" value="32768"></div>
+              <div><div class="mini">max output</div><input id="maxRemoteTokens" class="field" type="number" min="16" max="65536" value="4096"></div>
+              <div><div class="mini">queue timeout sec</div><input id="queueTimeoutSec" class="field" type="number" min="5" max="3600" value="120"></div>
+            </div>
+
+            <div class="label">Manual capability grants</div>
+            <div class="control-grid">
+              <div><div class="mini">hours</div><input id="grantHours" class="field" type="number" min="1" max="8760" value="24"></div>
+              <div><div class="mini">models</div><input id="grantModels" class="field" value="*" placeholder="* or exact models"></div>
+            </div>
+            <div class="row" style="margin-top:7px">
+              <input id="grantImport" class="field" placeholder="paste signed capability token">
+              <button id="importGrantBtn" class="btn small">import</button>
+            </div>
+            <div id="grantSummary" class="mini" style="margin-top:6px">0 imported grants</div>
+          </div>
+        </details>
       </section>
 
       <section class="section optional-mobile">
-        <h2>Discovery / fallback planes</h2>
+        <details class="advanced-box">
+        <summary>Advanced network / discovery</summary>
+        <div class="details-body" style="padding:0">
+        <h2 style="margin-top:2px">Discovery / fallback planes</h2>
         <div class="label">Mesh namespace</div>
         <input id="namespaceInput" class="field" value="open-inference-mesh-v2">
 
@@ -395,7 +445,9 @@ textarea.compact{min-height:55px;resize:vertical}
         <div class="hint" style="margin-top:8px">
           Discovery planes are independent. After signaling, inference traffic is direct encrypted WebRTC whenever possible. TURN is only used when configured and direct ICE cannot connect.
         </div>
-      </section>
+              </div>
+        </details>
+</section>
     </aside>
 
     <section class="center">
@@ -448,12 +500,21 @@ textarea.compact{min-height:55px;resize:vertical}
       </div>
 
       <div id="tab-peers" class="tabpane active">
-        <div class="row" style="justify-content:space-between">
+        <div class="row" style="justify-content:space-between;align-items:flex-start">
           <div>
-            <div class="label" style="margin:0">Connected mesh peers</div>
-            <div id="peerSummary" class="mini">0 peers</div>
+            <div class="label" style="margin:0">Peer requests</div>
+            <div class="mini">Accept a signed node once. Enable/disable inference any time.</div>
           </div>
-          <button id="announceBtn" class="btn small">announce</button>
+          <div id="pendingPeerCount" class="peer-count">0</div>
+        </div>
+        <div id="peerOffers" class="offer-stack"></div>
+
+        <div class="row" style="justify-content:space-between;margin-top:14px">
+          <div>
+            <div class="label" style="margin:0">Your peers</div>
+            <div id="peerSummary" class="mini">0 accepted</div>
+          </div>
+          <button id="announceBtn" class="btn small">refresh</button>
         </div>
         <div id="peerList"></div>
       </div>
@@ -490,6 +551,8 @@ textarea.compact{min-height:55px;resize:vertical}
         <div class="agent-tool"><strong>oim_add_endpoint</strong><p>Add and probe an OpenAI-compatible or Ollama endpoint.</p></div>
         <div class="agent-tool"><strong>oim_join_mesh / oim_leave_mesh</strong><p>Control public mesh participation.</p></div>
         <div class="agent-tool"><strong>oim_run_inference</strong><p>Run local-first or mesh inference with explicit route/model selection.</p></div>
+        <div class="agent-tool"><strong>oim_accept_peer / oim_deny_peer</strong><p>Accept or deny a signed discovered node with the same trust controls shown in the UI.</p></div>
+        <div class="agent-tool"><strong>oim_set_peer_enabled</strong><p>Pause or resume inference access for an accepted peer without forgetting it.</p></div>
         <div class="agent-tool"><strong>oim_set_provider_policy</strong><p>Configure model scope, sharing, access mode, queue and rate limits.</p></div>
         <div class="agent-tool"><strong>oim_set_rendezvous</strong><p>Configure global NATS rendezvous fabrics, direct-peer target and candidate reservoir.</p></div>
         <div class="agent-tool"><strong>oim_connect_nkn</strong><p>Establish an NKN overlay route to a known address.</p></div>
@@ -605,7 +668,7 @@ NKN encrypted overlay fallback</div>
       </div>
 
       <div class="footer-note">
-        STATIC HOST SAFE · NATS RENDEZVOUS + WEBRTC + NKN · WEBMCP AGENT TOOLS · MULTI-PLANE DISCOVERY · SIGNED IDENTITIES · CAPABILITY-SCOPED INFERENCE · QUEUE/RATE STATE · REMOTE INFERENCE OFF BY DEFAULT
+        STATIC HOST SAFE · ACCEPT/DENY PEERS · NATS + WEBRTC + NKN · AGENT TOOLS · MULTI-PLANE DISCOVERY · SIGNED IDENTITIES · CAPABILITY-SCOPED INFERENCE · QUEUE/RATE STATE · REMOTE INFERENCE OFF BY DEFAULT
       </div>
       <section class="sr-only" id="agentSemanticDescription" aria-label="Open Inference Mesh agent instructions">
         <h1>Open Inference Mesh agent interface</h1>
@@ -683,6 +746,10 @@ const state = {
   pending: new Map(),
   grants: new Map(),         // issuer node -> signed capability token
   allowlist: new Set(),
+  peerAccepted: new Set(),
+  peerDenied: new Set(),
+  peerEnabled: new Set(),
+  peerToastSeen: new Set(),
   remoteQueue: [],
   usage: new Map(),          // stable requester node -> sliding-window records
   activeByNode: new Map(),
@@ -862,6 +929,12 @@ function loadPolicy(){
     }
     const a=JSON.parse(localStorage.getItem('oim.allowlist')||'[]');
     state.allowlist=new Set(Array.isArray(a)?a:[]);
+    const pa=JSON.parse(localStorage.getItem('oim.peerAccepted')||'[]');
+    const pd=JSON.parse(localStorage.getItem('oim.peerDenied')||'[]');
+    const pe=JSON.parse(localStorage.getItem('oim.peerEnabled')||'[]');
+    state.peerAccepted=new Set(Array.isArray(pa)?pa:[]);
+    state.peerDenied=new Set(Array.isArray(pd)?pd:[]);
+    state.peerEnabled=new Set(Array.isArray(pe)?pe:[]);
     const g=JSON.parse(localStorage.getItem('oim.grants')||'[]');
     state.grants=new Map(Array.isArray(g)?g:[]);
     const s=JSON.parse(localStorage.getItem('oim.strategies')||'["nostr","torrent","mqtt","ipfs"]');
@@ -876,6 +949,9 @@ function persistPolicy(){
     queueTimeoutSec:state.queueTimeoutSec,grantHours:state.grantHours,grantModels:state.grantModels,serveModels:state.serveModels,nknEnabled:state.nknEnabled,natsEnabled:state.natsEnabled,natsTargetPeers:state.natsTargetPeers,natsReservoirSize:state.natsReservoirSize
   }));
   localStorage.setItem('oim.allowlist',JSON.stringify([...state.allowlist]));
+  localStorage.setItem('oim.peerAccepted',JSON.stringify([...state.peerAccepted]));
+  localStorage.setItem('oim.peerDenied',JSON.stringify([...state.peerDenied]));
+  localStorage.setItem('oim.peerEnabled',JSON.stringify([...state.peerEnabled]));
   localStorage.setItem('oim.grants',JSON.stringify([...state.grants]));
   localStorage.setItem('oim.strategies',JSON.stringify([...state.enabledStrategies]));
 }
@@ -897,7 +973,7 @@ function syncPolicyUI(){
 }
 function updateGrantSummary(){
   const el=$('#grantSummary');
-  if(el)el.textContent=`${state.grants.size} imported grant(s) · ${state.allowlist.size} allowlisted identit${state.allowlist.size===1?'y':'ies'}`;
+  if(el)el.textContent=`${state.grants.size} imported grant(s) · ${state.peerAccepted.size} accepted peer(s)`;
 }
 async function identityProof(){
   const body={v:1,node:state.nodeId,pub:state.identity.pub,alg:state.identity.alg,kxPub:state.identity.kxPub};
@@ -1137,11 +1213,11 @@ function localModels(){
 function remoteModels(){
   const out=[],seen=new Set();
   for(const p of state.peers.values()){
-    if(!p.online||!p.verified||!p.share||!p.node)continue;
+    if(!p.online||!p.verified||!p.share||!p.node||state.peerDenied.has(p.node))continue;
     for(const m of p.models||[]){
       const k=`${p.node}|${m}`;if(seen.has(k))continue;seen.add(k);
-      const routes=[...(state.nodeRoutes.get(p.node)||[])].filter(id=>state.peers.get(id)?.online);
-      out.push({model:m,source:'mesh',providerNode:p.node,peerId:routes[0]||p.id,label:p.label||p.node.slice(0,8),load:p.load||0,queue:p.queue||0,routes:routes.length});
+      const routes=routesForNode(p.node);
+      out.push({model:m,source:'mesh',providerNode:p.node,peerId:routes[0]||p.id,label:p.label||p.node.slice(0,8),load:p.load||0,queue:p.queue||0,routes:Math.max(1,routes.length)});
     }
   }
   return out;
@@ -1149,7 +1225,8 @@ function remoteModels(){
 
 function refreshModelSelect(){
   const sel=$('#modelSelect');
-  const prior=sel.value;
+  let priorChoice=null;
+  try{priorChoice=sel.value?JSON.parse(sel.value):null}catch(_){}
   const local=localModels(), remote=remoteModels();
   const groups=[];
   if(local.length) groups.push(['LOCAL',local]);
@@ -1171,7 +1248,18 @@ function refreshModelSelect(){
       }
       sel.append(g);
     }
-    if([...sel.options].some(o=>o.value===prior)) sel.value=prior;
+    if(priorChoice){
+      const opts=[...sel.options];
+      const match=opts.find(o=>{
+        try{
+          const x=JSON.parse(o.value);
+          if(x.source!==priorChoice.source||x.model!==priorChoice.model)return false;
+          if(x.source==='local')return x.endpoint===priorChoice.endpoint;
+          return x.providerNode===priorChoice.providerNode;
+        }catch(_){return false}
+      });
+      if(match)sel.value=match.value;
+    }
   }
   updateStats();
 }
@@ -2012,7 +2100,7 @@ async function handleHello(data,meta,wrapper){
       return;
     }
   }
-  const models=Array.isArray(data.models)?data.models.filter(x=>typeof x==='string').slice(0,64):[];
+  const models=state.peerDenied.has(data.node)?[]:(Array.isArray(data.models)?data.models.filter(x=>typeof x==='string').slice(0,64):[]);
   upsertPeer(peerId,{
     online:true,lastSeen:now(),verified:true,node:data.node,pub:data.pub,alg:data.alg,kxPub:data.kxPub,
     label:data.label||data.node.slice(0,8),models,share:!!data.share,advertise:!!data.advertise,
@@ -2027,6 +2115,7 @@ async function handleHello(data,meta,wrapper){
   // NKN has no symmetric WebRTC onPeerJoin event; reply once so the dialing side learns our signed identity too.
   if(wrapper.strategy==='nkn'&&!wasVerified)sendHello(wrapper,peerId).catch(()=>{});
   if(!wasVerified)sendPeerExchange(wrapper,peerId).catch(()=>{});
+  if(!wasVerified&&nodeDecision(data.node)==='pending')setTimeout(()=>showPeerToast(data.node),80);
   renderPeers();refreshModelSelect();updateStats();drawTopology();renderStatePanel();
 }
 
@@ -2066,6 +2155,8 @@ function ingressAllowed(peerId){
 
 async function authorizeRemoteJob(peerMeta,data){
   if(!peerMeta?.verified||!peerMeta.node)return {ok:false,error:'peer identity not verified'};
+  if(state.peerDenied.has(peerMeta.node))return {ok:false,error:'peer denied by provider'};
+  if(state.peerAccepted.has(peerMeta.node)&&!state.peerEnabled.has(peerMeta.node))return {ok:false,error:'peer is disabled by provider'};
   if(!state.share)return {ok:false,error:'peer inference sharing disabled'};
   const prompt=String(data.prompt||'');
   if(!prompt||prompt.length>48000)return {ok:false,error:'prompt invalid or too large'};
@@ -2076,7 +2167,7 @@ async function authorizeRemoteJob(peerMeta,data){
 
   let grant=null;
   if(data.grant)grant=await validateCapabilityToken(data.grant,peerMeta.node,match.model);
-  if(state.accessMode==='capability'&&!grant)return {ok:false,error:'valid capability grant required'};
+  if(state.accessMode==='capability'&&!grant&&!nodeIsEnabled(peerMeta.node))return {ok:false,error:'peer has not been accepted/enabled and has no valid capability grant'};
   if(state.accessMode==='allowlist'&&!state.allowlist.has(peerMeta.node)&&!grant)return {ok:false,error:'identity not allowlisted and no valid grant supplied'};
 
   const grantLimits=grant?.limits||{};
@@ -2272,49 +2363,186 @@ function cleanupPeers(){
   processRemoteQueue();
 }
 
-function renderPeers(){
-  const box=$('#peerList');box.innerHTML='';
-  const peers=[...state.peers.values()].filter(p=>p.online).sort((a,b)=>(b.share?1:0)-(a.share?1:0)||(a.load||0)-(b.load||0));
-  const stable=new Set(peers.filter(p=>p.verified&&p.node).map(p=>p.node));
-  $('#peerSummary').textContent=`${stable.size} signed node(s) · ${peers.length} live route(s) · ${peers.filter(p=>p.share).length} sharing route(s)`;
-  if(!peers.length){box.innerHTML='<div class="empty">No peers yet. Multiple independent discovery planes and rotating shards continue searching automatically.</div>';return}
-  for(const p of peers.slice(0,120)){
-    const allowed=p.node&&state.allowlist.has(p.node);
-    const div=document.createElement('div');div.className='peer-card';
-    div.innerHTML=`
-      <div class="peer-head">
-        <div class="peer-id"><span class="status-dot ${p.verified?'good':'warn'}"></span> ${esc(p.label||p.id.slice(0,12))}</div>
-        <span class="tag ${p.share?'good':''}">${p.share?'SHARING':'DISCOVERY'}</span>
-        <span class="tag ${p.verified?'good':'warn'}">${p.verified?'SIGNED':'UNVERIFIED'}</span>
-      </div>
-      <div class="endpoint-url">${esc(p.node||p.id)} · route ${esc(p.id.slice(0,10))}</div>
-      <div class="tags">
-        <span class="tag">${esc((p.strategy||'webrtc').toUpperCase())}</span>
-        ${p.nknAddr?'<span class="tag good">NKN</span>':''}
-        <span class="tag">active ${esc(p.load||0)}/${esc(p.capacity||0)}</span>
-        <span class="tag">queue ${esc(p.queue||0)}/${esc(p.maxQueue||0)}</span>
-        <span class="tag">${esc((state.nodeRoutes.get(p.node)?.size)||1)} route(s)</span>
-        <span class="tag">${esc(p.accessMode||'policy ?')}</span>
-        ${(p.models||[]).slice(0,5).map(m=>`<span class="tag">${esc(m)}</span>`).join('')}
-        ${(p.models||[]).length>5?`<span class="tag">+${p.models.length-5}</span>`:''}
-      </div>
-      ${p.verified?`<div class="row" style="margin-top:7px">
-        <button class="btn small allow">${allowed?'unallow':'allow'}</button>
-        <button class="btn small grant">grant scoped access</button>
-      </div>`:''}`;
-    if(p.verified){
-      div.querySelector('.allow').onclick=()=>{
-        if(state.allowlist.has(p.node))state.allowlist.delete(p.node);else state.allowlist.add(p.node);
-        persistPolicy();updateGrantSummary();renderPeers();
-      };
-      div.querySelector('.grant').onclick=async()=>{
-        try{await sendGrantToPeer(p.id)}catch(e){log('err',`Grant failed: ${e.message}`)}
-      };
+
+function nodeDecision(node){
+  if(state.peerDenied.has(node))return 'denied';
+  if(state.peerAccepted.has(node))return 'accepted';
+  return 'pending';
+}
+function nodeIsEnabled(node){
+  return state.peerAccepted.has(node)&&state.peerEnabled.has(node)&&!state.peerDenied.has(node);
+}
+function stablePeerGroups(){
+  const groups=new Map();
+  for(const p of state.peers.values()){
+    if(!p.online||!p.verified||!p.node)continue;
+    let g=groups.get(p.node);
+    if(!g){
+      g={node:p.node,label:p.label||p.node.slice(0,10),models:new Set(),strategies:new Set(),routes:0,
+         share:false,load:0,capacity:0,queue:0,maxQueue:0,nknAddr:'',bestPeerId:p.id,lastSeen:p.lastSeen||0};
+      groups.set(p.node,g);
     }
-    box.append(div);
+    g.routes++;g.strategies.add(p.strategy||'webrtc');g.share=g.share||!!p.share;
+    g.load=Math.min(g.load||Number.MAX_SAFE_INTEGER,Number(p.load)||0);
+    g.capacity=Math.max(g.capacity,Number(p.capacity)||0);g.queue=Math.min(g.queue||Number.MAX_SAFE_INTEGER,Number(p.queue)||0);
+    g.maxQueue=Math.max(g.maxQueue,Number(p.maxQueue)||0);g.nknAddr=g.nknAddr||p.nknAddr||'';
+    g.lastSeen=Math.max(g.lastSeen,p.lastSeen||0);
+    for(const m of p.models||[])g.models.add(m);
+    if(p.share)g.bestPeerId=p.id;
+  }
+  return [...groups.values()].map(g=>({...g,models:[...g.models],strategies:[...g.strategies]}));
+}
+function bestRouteForNode(node){
+  const ids=routesForNode(node);
+  return ids[0]||[...state.peers.values()].find(p=>p.online&&p.node===node)?.id||null;
+}
+async function acceptPeer(node,{silent=false}={}){
+  state.peerDenied.delete(node);
+  state.peerAccepted.add(node);
+  state.peerEnabled.add(node);
+  state.allowlist.add(node);
+  persistPolicy();
+  const route=bestRouteForNode(node);
+  if(route){
+    try{await sendGrantToPeer(route)}catch(e){
+      // Accepted/allowlisted remains valid even if capability delivery waits for a later route.
+      log('warn',`Accepted ${node.slice(0,10)}; capability delivery deferred: ${e.message}`);
+    }
+  }
+  if(!silent)log('ok',`Peer ${node.slice(0,10)} accepted and enabled.`);
+  renderPeerOffers();renderPeers();updateGrantSummary();scheduleAnnounce();emitAgentState?.();
+}
+function denyPeer(node,{silent=false}={}){
+  state.peerAccepted.delete(node);state.peerEnabled.delete(node);state.allowlist.delete(node);state.peerDenied.add(node);
+  persistPolicy();
+  if(!silent)log('info',`Peer ${node.slice(0,10)} denied.`);
+  renderPeerOffers();renderPeers();updateGrantSummary();emitAgentState?.();
+}
+function forgetPeerDecision(node){
+  state.peerAccepted.delete(node);state.peerEnabled.delete(node);state.peerDenied.delete(node);state.allowlist.delete(node);
+  persistPolicy();renderPeerOffers();renderPeers();updateGrantSummary();emitAgentState?.();
+}
+function togglePeerEnabled(node){
+  if(!state.peerAccepted.has(node))return;
+  if(state.peerEnabled.has(node))state.peerEnabled.delete(node);else state.peerEnabled.add(node);
+  persistPolicy();renderPeers();emitAgentState?.();
+}
+function pendingPeerGroups(){
+  return stablePeerGroups().filter(g=>nodeDecision(g.node)==='pending');
+}
+function renderPeerOffers(){
+  const box=$('#peerOffers');if(!box)return;
+  const pending=pendingPeerGroups();
+  const count=$('#pendingPeerCount');if(count)count.textContent=String(pending.length);
+  box.innerHTML='';
+  if(!pending.length){
+    box.innerHTML='<div class="notice-empty">No new peer requests.</div>';return;
+  }
+  for(const g of pending.slice(0,20)){
+    const d=document.createElement('div');d.className='offer-card';
+    const modelText=g.models.length?`${g.models.length} model${g.models.length===1?'':'s'} offered`:'discovery peer';
+    d.innerHTML=`
+      <div class="title"><span class="status-dot good"></span>${esc(g.label)} <span class="tag good">SIGNED</span></div>
+      <div class="sub">${esc(modelText)} · ${g.routes} route${g.routes===1?'':'s'} · ${esc(g.strategies.join(' + '))}</div>
+      ${g.models.length?`<div class="sub">${esc(g.models.slice(0,3).join(' · '))}${g.models.length>3?' · …':''}</div>`:''}
+      <div class="offer-actions">
+        <button class="btn small accept">accept</button>
+        <button class="btn small deny">deny</button>
+      </div>`;
+    d.querySelector('.accept').onclick=()=>acceptPeer(g.node);
+    d.querySelector('.deny').onclick=()=>denyPeer(g.node);
+    box.append(d);
   }
 }
+function showPeerToast(node){
+  if(state.peerToastSeen.has(node)||nodeDecision(node)!=='pending')return;
+  state.peerToastSeen.add(node);
+  const g=stablePeerGroups().find(x=>x.node===node);if(!g)return;
+  const box=$('#peerToasts');if(!box)return;
+  const d=document.createElement('div');d.className='toast';
+  d.innerHTML=`
+    <div class="toast-title">New signed peer</div>
+    <div class="toast-sub">${esc(g.label)} · ${g.models.length?`${g.models.length} model${g.models.length===1?'':'s'} available`:'discovery node'} · ${g.routes} route${g.routes===1?'':'s'}</div>
+    <div class="toast-actions">
+      <button class="btn small accept">accept</button>
+      <button class="btn small deny">deny</button>
+      <button class="btn small dismiss">later</button>
+    </div>`;
+  const remove=()=>d.remove();
+  d.querySelector('.accept').onclick=async()=>{await acceptPeer(node);remove()};
+  d.querySelector('.deny').onclick=()=>{denyPeer(node);remove()};
+  d.querySelector('.dismiss').onclick=remove;
+  box.append(d);
+  setTimeout(()=>{if(d.isConnected)d.remove()},30000);
+}
+function updateShareSummary(){
+  const el=$('#shareSummary');if(!el)return;
+  const enabled=[...state.peerEnabled].filter(n=>state.peerAccepted.has(n)&&!state.peerDenied.has(n)).length;
+  el.innerHTML=`<span class="status-dot ${state.share?'good':'warn'}"></span><span>${state.share?`serving ${enabled} enabled peer${enabled===1?'':'s'}`:'sharing disabled'} · ${state.serveModels==='*'?'all local models':esc(state.serveModels)}</span>`;
+}
 
+function renderPeers(){
+  const box=$('#peerList');if(!box)return;box.innerHTML='';
+  const groups=stablePeerGroups().sort((a,b)=>{
+    const da=nodeDecision(a.node),db=nodeDecision(b.node);
+    const order={accepted:0,pending:1,denied:2};
+    return order[da]-order[db] || (b.share?1:0)-(a.share?1:0) || a.label.localeCompare(b.label);
+  });
+  const accepted=groups.filter(g=>nodeDecision(g.node)==='accepted').length;
+  const enabled=groups.filter(g=>nodeIsEnabled(g.node)).length;
+  const denied=groups.filter(g=>nodeDecision(g.node)==='denied').length;
+  $('#peerSummary').textContent=`${accepted} accepted · ${enabled} enabled${denied?` · ${denied} denied`:''}`;
+
+  renderPeerOffers();
+  updateShareSummary();
+
+  if(!groups.length){
+    box.innerHTML='<div class="empty">Searching for signed peers… NATS rendezvous and fallback discovery run automatically.</div>';
+    return;
+  }
+
+  for(const g of groups){
+    const decision=nodeDecision(g.node),enabled=nodeIsEnabled(g.node);
+    const d=document.createElement('div');d.className=`peer-simple ${decision}`;
+    const status=decision==='accepted'?(enabled?'ENABLED':'DISABLED'):decision.toUpperCase();
+    d.innerHTML=`
+      <div class="peer-top">
+        <span class="status-dot ${decision==='accepted'?(enabled?'good':'warn'):decision==='denied'?'bad':'warn'}"></span>
+        <div class="peer-name">${esc(g.label)}</div>
+        <span class="badge ${decision==='accepted'?(enabled?'good':'warn'):decision==='denied'?'bad':'warn'}">${status}</span>
+      </div>
+      <div class="peer-meta">${g.share?'offers inference':'discovery only'} · ${g.routes} route${g.routes===1?'':'s'} · ${esc(g.strategies.join(' + '))} · ${g.load}/${Math.max(1,g.capacity)} busy${g.queue?` · ${g.queue} queued`:''}</div>
+      <div class="peer-models">${g.models.length?esc(g.models.slice(0,5).join(' · ')):'No models advertised'}${g.models.length>5?' · …':''}</div>
+      <div class="peer-buttons">
+        ${decision==='pending'?`
+          <button class="btn small accept">accept</button>
+          <button class="btn small deny">deny</button>
+        `:decision==='accepted'?`
+          <button class="btn small ${enabled?'enabled':''} toggle">${enabled?'disable':'enable'}</button>
+          <button class="btn small deny">deny</button>
+        `:`
+          <button class="btn small accept">accept</button>
+          <button class="btn small reset">forget</button>
+        `}
+        <button class="btn small details">copy id</button>
+      </div>`;
+
+    if(decision==='pending'){
+      d.querySelector('.accept').onclick=()=>acceptPeer(g.node);
+      d.querySelector('.deny').onclick=()=>denyPeer(g.node);
+    }else if(decision==='accepted'){
+      d.querySelector('.toggle').onclick=()=>togglePeerEnabled(g.node);
+      d.querySelector('.deny').onclick=()=>denyPeer(g.node);
+    }else{
+      d.querySelector('.accept').onclick=()=>acceptPeer(g.node);
+      d.querySelector('.reset').onclick=()=>forgetPeerDecision(g.node);
+    }
+    d.querySelector('.details').onclick=async()=>{
+      try{await navigator.clipboard.writeText(g.node);log('ok',`Copied peer ${g.node.slice(0,10)} ID.`)}catch(_){}
+    };
+    box.append(d);
+  }
+}
 function renderRouterState(){
   const box=$('#routerState');if(!box)return;box.innerHTML='';
   for(const name of Object.keys(CONFIG.strategyPackages)){
@@ -2353,6 +2581,7 @@ function renderStatePanel(){
     <div class="statline"><span>workers</span><span>${state.activeRemoteJobs}/${state.maxJobs} active · ${state.remoteQueue.length}/${state.maxQueue} queued</span></div>
     <div class="statline"><span>per-peer</span><span>${state.perPeerConcurrent} active · ${state.perPeerQueue} queued · ${state.rpmLimit} RPM · ${state.tpmLimit} est TPM</span></div>
     <div class="statline"><span>model scope</span><span>${esc(state.serveModels)}</span></div>
+    <div class="statline"><span>mesh models</span><span>${remoteModels().length} routeable model advertisement(s)</span></div>
     <div class="statline"><span>NATS rendezvous</span><span>${esc(state.nats.status)} · ${state.nats.connections.size} fabric(s) · ${state.nats.candidates.size} candidates</span></div>
     <div class="statline"><span>NKN overlay</span><span>${esc(state.nkn.status)}${state.nkn.addr?' · '+esc(state.nkn.addr).slice(0,22)+'…':''}</span></div>
     <div class="statline"><span>max output</span><span>${state.maxRemoteTokens} tokens · ${state.queueTimeoutSec}s queue TTL</span></div>`;
@@ -2416,20 +2645,46 @@ function routesForNode(node){
   });
   return ids;
 }
-function chooseRemotePeer(model,preferredNode=null){
-  const candidates=new Map();
-  for(const p of state.peers.values()){
-    if(!p.online||!p.verified||!p.share||!p.node||!(p.models||[]).includes(model))continue;
-    if(preferredNode&&p.node!==preferredNode)continue;
-    const old=candidates.get(p.node);
-    const score=((p.load||0)/Math.max(1,p.capacity||1))+((p.queue||0)/Math.max(1,p.maxQueue||1));
-    if(!old||score<old.score)candidates.set(p.node,{p,score});
+function chooseRemotePeer(model,preferredNodeOrPeer=null){
+  // The UI stores both providerNode (stable crypto identity) and peerId
+  // (ephemeral transport route). Normalize either form to the stable NodeID.
+  let preferredNode=preferredNodeOrPeer||null;
+  if(preferredNode&&state.peers.has(preferredNode)){
+    preferredNode=state.peers.get(preferredNode)?.node||preferredNode;
   }
-  const sorted=[...candidates.values()].sort((a,b)=>a.score-b.score);
-  if(!sorted.length)return null;
-  const chosen=sorted[0].p;
+
+  const allCandidates=new Map();
+  for(const p of state.peers.values()){
+    if(!p.online||!p.verified||!p.share||!p.node||state.peerDenied.has(p.node))continue;
+    if(!(p.models||[]).includes(model))continue;
+    const old=allCandidates.get(p.node);
+    const capacity=Math.max(1,Number(p.capacity)||1);
+    const maxQueue=Math.max(1,Number(p.maxQueue)||1);
+    const score=((Number(p.load)||0)/capacity)+((Number(p.queue)||0)/maxQueue);
+    if(!old||score<old.score)allCandidates.set(p.node,{p,score});
+  }
+
+  if(!allCandidates.size)return null;
+
+  // Prefer the exact provider selected in the model picker. If that stable node
+  // vanished between selection and send, degrade gracefully to another node
+  // advertising the exact same model instead of reporting a false "no peer".
+  let pool=[...allCandidates.values()];
+  if(preferredNode){
+    const exact=allCandidates.get(preferredNode);
+    if(exact)pool=[exact];
+    else log('warn',`Selected provider ${String(preferredNode).slice(0,10)} is no longer reachable; rerouting ${model} to another advertising peer.`);
+  }
+
+  pool.sort((a,b)=>a.score-b.score);
+  const chosen=pool[0].p;
   const route=routesForNode(chosen.node)[0]||chosen.id;
-  return [route,state.peers.get(route)||chosen];
+  const routedPeer=state.peers.get(route)||chosen;
+
+  // Synthetic routes (e.g. NKN) can lag one advertisement behind. Preserve
+  // the stable provider metadata needed by callRemote().
+  if(!routedPeer.node)routedPeer.node=chosen.node;
+  return [route,routedPeer];
 }
 function roomForPeer(peerId){
   const naddr=nknAddrFromPeerId(peerId);if(naddr)return getNknWrapper(naddr);
@@ -2494,8 +2749,14 @@ async function runPrompt(){
       meta=`LOCAL · ${m.model} · ${Math.round(performance.now()-t0)}ms`;
       state.lastRoute='local';
     }else if(route==='mesh'){
-      const rp=chooseRemotePeer(choice.model,choice.peerId);
-      if(!rp)throw new Error(`no connected sharing peer currently advertises ${choice.model}`);
+      const rp=chooseRemotePeer(choice.model,choice.providerNode||choice.peerId);
+      if(!rp){
+        const seen=[...state.peers.values()].filter(p=>p.online&&p.verified&&(p.models||[]).includes(choice.model));
+        const detail=seen.length
+          ? `${seen.length} signed route(s) know the model, but none currently advertise sharing`
+          : `no signed live route currently reports the model`;
+        throw new Error(`no usable mesh route for ${choice.model}: ${detail}`);
+      }
       $('#jobProgress').style.width='45%';
       const res=await callRemote(rp[0],choice.model,prompt,choice.providerNode||rp[1]?.node);
       text=res.text;meta=`MESH · ${res.model||choice.model} · peer ${rp[0].slice(0,8)} · ${res.latency_ms||Math.round(performance.now()-t0)}ms worker`;
@@ -2510,8 +2771,11 @@ async function runPrompt(){
         meta=`AUTO→LOCAL · ${m.model} · ${Math.round(performance.now()-t0)}ms`;
         state.lastRoute='local';
       }else{
-        const rp=chooseRemotePeer(choice.model,choice.peerId);
-        if(!rp)throw new Error('no route to selected model');
+        const rp=chooseRemotePeer(choice.model,choice.providerNode||choice.peerId);
+        if(!rp){
+          const seen=[...state.peers.values()].filter(p=>p.online&&p.verified&&(p.models||[]).includes(choice.model));
+          throw new Error(`no route to selected model ${choice.model}${seen.length?` (${seen.length} signed route(s) present but not shareable)`:' (model advertisement is stale or provider disconnected)'}`);
+        }
         $('#jobProgress').style.width='45%';
         const res=await callRemote(rp[0],choice.model,prompt,choice.providerNode||rp[1]?.node);
         text=res.text;meta=`AUTO→MESH · ${res.model||choice.model} · peer ${rp[0].slice(0,8)}`;
@@ -2594,9 +2858,9 @@ function drawTopology(){
 }
 function hashTiny(s){let h=2166136261;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)}return h>>>0}
 
-const OIM_AGENT_MANIFEST={protocol:'open-inference-mesh',version:5,transport:['webrtc','nkn'],discovery:['nats','nostr','bittorrent','mqtt','waku','custom-ws','manual'],interfaces:['webmcp','window.OIM','postmessage','customevent'],tools:['get_state','list_models','scan_local','add_endpoint','join_mesh','leave_mesh','run_inference','set_provider_policy','connect_nkn','set_rendezvous','issue_capability','import_capability','announce','create_manual_offer','answer_manual_offer','accept_manual_answer','get_deployment_guide']};
+const OIM_AGENT_MANIFEST={protocol:'open-inference-mesh',version:6,transport:['webrtc','nkn'],discovery:['nats','nostr','bittorrent','mqtt','waku','custom-ws','manual'],interfaces:['webmcp','window.OIM','postmessage','customevent'],tools:['get_state','list_models','scan_local','add_endpoint','join_mesh','leave_mesh','run_inference','accept_peer','deny_peer','set_peer_enabled','set_provider_policy','connect_nkn','set_rendezvous','issue_capability','import_capability','announce','create_manual_offer','answer_manual_offer','accept_manual_answer','get_deployment_guide']};
 function safeEndpointState(ep){return {url:ep.url,label:ep.label,status:ep.status,type:ep.type||null,latency_ms:ep.latency??null,models:[...(ep.models||[])],last_seen:ep.lastSeen||null,error:ep.error||null}}
-function agentSnapshot(){return {protocol:'open-inference-mesh',version:5,timestamp:now(),secure_context:window.isSecureContext,node:{id:state.nodeId,identity_algorithm:state.identity?.alg||null,mesh_joined:state.joined,nkn_enabled:state.nknEnabled,nkn_status:state.nkn.status,nkn_address:state.nkn.addr||null},provider:{advertise:state.advertise,share:state.share,access_mode:state.accessMode,served_models:state.serveModels,max_active:state.maxJobs,max_queue:state.maxQueue,peer_active_limit:state.perPeerConcurrent,peer_queue_limit:state.perPeerQueue,rpm_limit:state.rpmLimit,estimated_tpm_limit:state.tpmLimit,max_remote_output_tokens:state.maxRemoteTokens,queue_timeout_sec:state.queueTimeoutSec,active_jobs:state.activeRemoteJobs,queued_jobs:state.remoteQueue.length},endpoints:[...state.endpoints.values()].map(safeEndpointState),local_models:localModels().map(x=>({model:x.model,endpoint:x.endpoint,label:x.label})),remote_models:remoteModels().map(x=>({model:x.model,provider_node:x.providerNode||null,transport_peer:x.peerId||null,label:x.label,active:x.load||0,queued:x.queue||0,routes:x.routes||1})),peers:[...state.peers.values()].filter(p=>p.online).map(p=>({transport_peer:p.id,node:p.node||null,verified:!!p.verified,strategy:p.strategy||null,nkn_address:p.nknAddr||null,share:!!p.share,access_mode:p.accessMode||null,models:[...(p.models||[])],active:Number(p.load)||0,capacity:Number(p.capacity)||0,queued:Number(p.queue)||0,max_queue:Number(p.maxQueue)||0,last_seen:p.lastSeen||null})),discovery:{enabled:[...state.enabledStrategies],rooms:[...state.rooms.values()].map(w=>({strategy:w.strategy,kind:w.kind,shard:w.shard,peers:w.peers.size})),strategies:Object.fromEntries([...state.strategyStatus.entries()].map(([k,v])=>[k,{...v}])),nats:{enabled:state.natsEnabled,status:state.nats.status,fabrics:[...state.nats.connections.keys()],candidates:state.nats.candidates.size,target_peers:state.natsTargetPeers,reservoir_size:state.natsReservoirSize,namespace_hash:state.nats.namespaceHash}},grants:{imported_issuers:[...state.grants.keys()],allowlisted_nodes:[...state.allowlist]}}}
+function agentSnapshot(){return {protocol:'open-inference-mesh',version:6,timestamp:now(),secure_context:window.isSecureContext,node:{id:state.nodeId,identity_algorithm:state.identity?.alg||null,mesh_joined:state.joined,nkn_enabled:state.nknEnabled,nkn_status:state.nkn.status,nkn_address:state.nkn.addr||null},provider:{advertise:state.advertise,share:state.share,access_mode:state.accessMode,served_models:state.serveModels,max_active:state.maxJobs,max_queue:state.maxQueue,peer_active_limit:state.perPeerConcurrent,peer_queue_limit:state.perPeerQueue,rpm_limit:state.rpmLimit,estimated_tpm_limit:state.tpmLimit,max_remote_output_tokens:state.maxRemoteTokens,queue_timeout_sec:state.queueTimeoutSec,active_jobs:state.activeRemoteJobs,queued_jobs:state.remoteQueue.length},endpoints:[...state.endpoints.values()].map(safeEndpointState),local_models:localModels().map(x=>({model:x.model,endpoint:x.endpoint,label:x.label})),remote_models:remoteModels().map(x=>({model:x.model,provider_node:x.providerNode||null,transport_peer:x.peerId||null,label:x.label,active:x.load||0,queued:x.queue||0,routes:x.routes||1})),peers:stablePeerGroups().map(p=>({node:p.node,label:p.label,decision:nodeDecision(p.node),enabled:nodeIsEnabled(p.node),share:p.share,strategies:p.strategies,routes:p.routes,models:p.models,active:p.load,capacity:p.capacity,queued:p.queue,max_queue:p.maxQueue,last_seen:p.lastSeen})),discovery:{enabled:[...state.enabledStrategies],rooms:[...state.rooms.values()].map(w=>({strategy:w.strategy,kind:w.kind,shard:w.shard,peers:w.peers.size})),strategies:Object.fromEntries([...state.strategyStatus.entries()].map(([k,v])=>[k,{...v}])),nats:{enabled:state.natsEnabled,status:state.nats.status,fabrics:[...state.nats.connections.keys()],candidates:state.nats.candidates.size,target_peers:state.natsTargetPeers,reservoir_size:state.natsReservoirSize,namespace_hash:state.nats.namespaceHash}},grants:{imported_issuers:[...state.grants.keys()],allowlisted_nodes:[...state.allowlist]}}}
 function listAgentModels(){return {local:localModels().map(x=>({model:x.model,endpoint:x.endpoint,label:x.label})),mesh:remoteModels().map(x=>({model:x.model,provider_node:x.providerNode,transport_peer:x.peerId,label:x.label,active:x.load||0,queued:x.queue||0,routes:x.routes||1}))}}
 function chooseAgentModel(model,route='auto',providerNode=null){const local=localModels(),remote=remoteModels();if(model){const lm=local.find(x=>x.model===model),rm=remote.find(x=>x.model===model&&(!providerNode||x.providerNode===providerNode));if(route==='local')return lm?{...lm,route:'local'}:null;if(route==='mesh')return rm?{...rm,route:'mesh'}:null;return lm?{...lm,route:'local'}:(rm?{...rm,route:'mesh'}:null)}if(route==='local')return local[0]?{...local[0],route:'local'}:null;if(route==='mesh')return remote[0]?{...remote[0],route:'mesh'}:null;return local[0]?{...local[0],route:'local'}:(remote[0]?{...remote[0],route:'mesh'}:null)}
 async function agentRunInference({prompt,model=null,route='auto',provider_node=null,max_tokens=CONFIG.defaultMaxTokens,temperature=0.7}={}){prompt=String(prompt||'').trim();if(!prompt)throw new Error('prompt required');if(prompt.length>CONFIG.maxPromptChars)throw new Error('prompt too large');if(!['auto','local','mesh'].includes(route))throw new Error('route must be auto, local, or mesh');const chosen=chooseAgentModel(model,route,provider_node);if(!chosen)throw new Error('no matching model route');const t0=performance.now();if(chosen.route==='local'){const text=await callOpenAI(chosen.endpoint,chosen.model,[{role:'user',content:prompt}],{max_tokens:clamp(Number(max_tokens)||CONFIG.defaultMaxTokens,1,65536),temperature:clamp(Number(temperature)||0.7,0,2)});return {ok:true,text,route:'local',model:chosen.model,endpoint:chosen.endpoint,latency_ms:Math.round(performance.now()-t0)}}const rp=chooseRemotePeer(chosen.model,provider_node||chosen.providerNode);if(!rp)throw new Error('mesh provider unreachable');const res=await callRemote(rp[0],chosen.model,prompt,provider_node||chosen.providerNode||rp[1]?.node);return {ok:true,text:res.text,route:'mesh',model:res.model||chosen.model,provider_node:res.node||chosen.providerNode||rp[1]?.node,latency_ms:Math.round(performance.now()-t0),worker_latency_ms:res.latency_ms||null,queue_ms:res.queue_ms||null}}
@@ -2621,9 +2885,13 @@ async function agentSetRendezvous({enabled,servers,target_peers,reservoir_size}=
   return agentSnapshot().discovery.nats;
 }
 
-const OIM_RPC_METHODS={get_state:async()=>agentSnapshot(),list_models:async()=>listAgentModels(),scan_local:async()=>{await scanCommon();return {ok:true,endpoints:[...state.endpoints.values()].map(safeEndpointState)}},add_endpoint:async({url,label='agent',api_key=''}={})=>{const ep=await probeEndpoint(normalizeBaseUrl(String(url||'')),String(label||'agent'),String(api_key||''));if(!ep)throw new Error('endpoint unreachable');return safeEndpointState(ep)},join_mesh:async()=>{await joinMesh();return {ok:state.joined}},leave_mesh:async()=>{leaveMesh();return {ok:true}},run_inference:agentRunInference,set_provider_policy:agentSetProviderPolicy,connect_nkn:async({address}={})=>connectNknAddress(address),set_rendezvous:agentSetRendezvous,issue_capability:agentIssueCapability,import_capability:agentImportCapability,announce:async()=>{broadcastHello();return {ok:true}},create_manual_offer:async()=>{await createManualOffer();return {ok:true,token:$('#manualSignal').value}},answer_manual_offer:async({offer}={})=>{if(offer)$('#manualSignal').value=offer;await answerManualOffer();return {ok:true,answer:$('#manualSignal').value}},accept_manual_answer:async({answer}={})=>{if(answer)$('#manualSignal').value=answer;await acceptManualAnswer();return {ok:true}},get_deployment_guide:async()=>deploymentGuide()};
+const OIM_RPC_METHODS={get_state:async()=>agentSnapshot(),list_models:async()=>listAgentModels(),scan_local:async()=>{await scanCommon();return {ok:true,endpoints:[...state.endpoints.values()].map(safeEndpointState)}},add_endpoint:async({url,label='agent',api_key=''}={})=>{const ep=await probeEndpoint(normalizeBaseUrl(String(url||'')),String(label||'agent'),String(api_key||''));if(!ep)throw new Error('endpoint unreachable');return safeEndpointState(ep)},join_mesh:async()=>{await joinMesh();return {ok:state.joined}},leave_mesh:async()=>{leaveMesh();return {ok:true}},run_inference:agentRunInference,
+  accept_peer:async({node}={})=>{if(!node)throw new Error('node required');await acceptPeer(String(node));return {ok:true,node,decision:'accepted',enabled:true}},
+  deny_peer:async({node}={})=>{if(!node)throw new Error('node required');denyPeer(String(node));return {ok:true,node,decision:'denied'}},
+  set_peer_enabled:async({node,enabled}={})=>{if(!node)throw new Error('node required');if(!state.peerAccepted.has(String(node)))throw new Error('peer must be accepted first');if(enabled)state.peerEnabled.add(String(node));else state.peerEnabled.delete(String(node));persistPolicy();renderPeers();return {ok:true,node,enabled:nodeIsEnabled(String(node))}},
+  set_provider_policy:agentSetProviderPolicy,connect_nkn:async({address}={})=>connectNknAddress(address),set_rendezvous:agentSetRendezvous,issue_capability:agentIssueCapability,import_capability:agentImportCapability,announce:async()=>{broadcastHello();return {ok:true}},create_manual_offer:async()=>{await createManualOffer();return {ok:true,token:$('#manualSignal').value}},answer_manual_offer:async({offer}={})=>{if(offer)$('#manualSignal').value=offer;await answerManualOffer();return {ok:true,answer:$('#manualSignal').value}},accept_manual_answer:async({answer}={})=>{if(answer)$('#manualSignal').value=answer;await acceptManualAnswer();return {ok:true}},get_deployment_guide:async()=>deploymentGuide()};
 async function oimCall(method,params={}){const fn=OIM_RPC_METHODS[method];if(!fn)throw new Error(`unknown OIM method: ${method}`);return fn(params||{})}
-window.OIM=Object.freeze({version:5,manifest:OIM_AGENT_MANIFEST,call:oimCall,getState:()=>agentSnapshot(),listModels:()=>listAgentModels()});
+window.OIM=Object.freeze({version:6,manifest:OIM_AGENT_MANIFEST,call:oimCall,getState:()=>agentSnapshot(),listModels:()=>listAgentModels()});
 let agentEventTimer;function emitAgentState(){clearTimeout(agentEventTimer);agentEventTimer=setTimeout(()=>{const snap=agentSnapshot();window.dispatchEvent(new CustomEvent('oim:state',{detail:snap}));refreshAgentPanel()},100)}
 window.addEventListener('message',async e=>{if(e.source!==window||e.origin!==location.origin)return;const m=e.data;if(!m||m.type!=='oim:rpc'||!m.id||!m.method)return;try{const result=await oimCall(m.method,m.params||{});window.postMessage({type:'oim:rpc-result',id:m.id,ok:true,result},location.origin)}catch(err){window.postMessage({type:'oim:rpc-result',id:m.id,ok:false,error:String(err?.message||err)},location.origin)}});
 window.addEventListener('oim:rpc',async e=>{const m=e.detail||{};if(!m.id||!m.method)return;try{const result=await oimCall(m.method,m.params||{});window.dispatchEvent(new CustomEvent('oim:rpc-result',{detail:{id:m.id,ok:true,result}}))}catch(err){window.dispatchEvent(new CustomEvent('oim:rpc-result',{detail:{id:m.id,ok:false,error:String(err?.message||err)}}))}});
@@ -2637,6 +2905,9 @@ async function registerWebMcpTools(){const mc=document.modelContext,status=$('#a
     {name:'oim_join_mesh',description:'Join enabled WebRTC discovery planes and NKN fallback overlay.',inputSchema:{type:'object',properties:{}},annotations:{readOnlyHint:false},execute:async()=>JSON.stringify(await oimCall('join_mesh'))},
     {name:'oim_leave_mesh',description:'Leave public mesh. Local inference remains available.',inputSchema:{type:'object',properties:{}},annotations:{readOnlyHint:false},execute:async()=>JSON.stringify(await oimCall('leave_mesh'))},
     {name:'oim_run_inference',description:'Run text inference. AUTO prefers locally owned inference then mesh. No arbitrary shell/tool execution.',inputSchema:{type:'object',properties:{prompt:{type:'string'},model:{type:'string'},route:{type:'string',enum:['auto','local','mesh']},provider_node:{type:'string'},max_tokens:{type:'integer',minimum:1,maximum:65536},temperature:{type:'number',minimum:0,maximum:2}},required:['prompt']},annotations:{readOnlyHint:false,untrustedContentHint:true},execute:async args=>JSON.stringify(await oimCall('run_inference',args))},
+    {name:'oim_accept_peer',description:'Accept a discovered signed peer and enable inference access for it.',inputSchema:{type:'object',properties:{node:{type:'string'}},required:['node']},annotations:{readOnlyHint:false},execute:async args=>JSON.stringify(await oimCall('accept_peer',args))},
+    {name:'oim_deny_peer',description:'Deny a signed peer. Denied peers cannot consume this provider and are hidden from remote model routing.',inputSchema:{type:'object',properties:{node:{type:'string'}},required:['node']},annotations:{readOnlyHint:false},execute:async args=>JSON.stringify(await oimCall('deny_peer',args))},
+    {name:'oim_set_peer_enabled',description:'Enable or disable inference for an already accepted peer without forgetting the trust decision.',inputSchema:{type:'object',properties:{node:{type:'string'},enabled:{type:'boolean'}},required:['node','enabled']},annotations:{readOnlyHint:false},execute:async args=>JSON.stringify(await oimCall('set_peer_enabled',args))},
     {name:'oim_set_provider_policy',description:'Configure model sharing scope, access mode, concurrency, queue and rate limits.',inputSchema:{type:'object',properties:{advertise:{type:'boolean'},share:{type:'boolean'},access_mode:{type:'string',enum:['capability','allowlist','verified']},serve_models:{type:'string'},max_active:{type:'integer'},max_queue:{type:'integer'},peer_active:{type:'integer'},peer_queue:{type:'integer'},rpm:{type:'integer'},estimated_tpm:{type:'integer'},max_output_tokens:{type:'integer'},queue_timeout_sec:{type:'integer'}}},annotations:{readOnlyHint:false},execute:async args=>JSON.stringify(await oimCall('set_provider_policy',args))},
     {name:'oim_set_rendezvous',description:'Configure the global NATS rendezvous fabrics and bounded direct-peer reservoir. NATS is signaling/discovery only; inference moves to direct WebRTC or NKN.',inputSchema:{type:'object',properties:{enabled:{type:'boolean'},servers:{type:'array',items:{type:'string'}},target_peers:{type:'integer',minimum:2,maximum:48},reservoir_size:{type:'integer',minimum:32,maximum:2048}}},annotations:{readOnlyHint:false},execute:async args=>JSON.stringify(await oimCall('set_rendezvous',args))},
     {name:'oim_connect_nkn',description:'Connect to a known NKN address as an independent encrypted overlay route.',inputSchema:{type:'object',properties:{address:{type:'string'}},required:['address']},annotations:{readOnlyHint:false},execute:async args=>JSON.stringify(await oimCall('connect_nkn',args))},
@@ -2673,7 +2944,7 @@ $('#advertiseToggle').onclick=()=>{
   state.advertise=!state.advertise;toggleButton($('#advertiseToggle'),state.advertise);persistPolicy();scheduleAnnounce();
 };
 $('#shareToggle').onclick=()=>{
-  state.share=!state.share;toggleButton($('#shareToggle'),state.share);persistPolicy();scheduleAnnounce();
+  state.share=!state.share;toggleButton($('#shareToggle'),state.share);persistPolicy();updateShareSummary();scheduleAnnounce();
   log(state.share?'warn':'info',state.share?'Remote inference sharing ENABLED. Connected peers may now submit inference jobs.':'Remote inference sharing disabled.');
 };
 for(const [id,key,min,max] of [
@@ -2685,7 +2956,7 @@ for(const [id,key,min,max] of [
   $('#'+id).onchange=()=>{state[key]=clamp(Number($('#'+id).value)||min,min,max);persistPolicy();scheduleAnnounce();processRemoteQueue()};
 }
 $('#grantModels').onchange=()=>{state.grantModels=$('#grantModels').value.trim()||'*';persistPolicy()};
-$('#serveModels').onchange=()=>{state.serveModels=$('#serveModels').value.trim()||'*';persistPolicy();scheduleAnnounce()};
+$('#serveModels').onchange=()=>{state.serveModels=$('#serveModels').value.trim()||'*';persistPolicy();updateShareSummary();scheduleAnnounce()};
 $('#accessMode').onchange=()=>{state.accessMode=$('#accessMode').value;persistPolicy();scheduleAnnounce()};
 $('#importGrantBtn').onclick=async()=>{
   const token=$('#grantImport').value.trim();if(!token)return;
@@ -2780,7 +3051,7 @@ setInterval(()=>{state.topologyTick++;drawTopology()},3000);
   $('#natsServers').value=localStorage.getItem('oim.natsServers')||'wss://demo.nats.io:8443';
   syncPolicyUI();
   await checkPermissions();
-  renderEndpoints();renderPeers();refreshModelSelect();renderStatePanel();
+  renderEndpoints();renderPeerOffers();renderPeers();refreshModelSelect();renderStatePanel();updateShareSummary();
   resizeCanvas();updateStats();
   await registerWebMcpTools();refreshAgentPanel();
 
