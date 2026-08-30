@@ -7,7 +7,7 @@
 <meta name="description" content="Open Inference Mesh: a static-hostable, local-first peer-to-peer intelligence commons. People and agents can discover shared inference, use it within provider limits, and voluntarily contribute locally owned models so useful machine intelligence becomes broadly accessible rather than dependent on a single institution.">
 <meta name="robots" content="index,follow">
 <meta name="application-name" content="Open Inference Mesh">
-<meta name="oim-protocol" content="open-inference-mesh-v7.20">
+<meta name="oim-protocol" content="open-inference-mesh-v7.21">
 <meta name="agent-interface" content="WebMCP, window.OIM, same-origin postMessage RPC, CustomEvent RPC">
 <link rel="help" href="?api=docs" title="Open Inference Mesh machine API documentation">
 <link rel="alternate" type="application/json" href="?api=docs" title="OIM agent API">
@@ -1282,7 +1282,11 @@ const state = {
   nknLogGate: new Map(),
   nknSendChains: new Map(),
   nknTxStats:{messages:0,chunks:0,deltaFrames:0,deltaChars:0},
-  streamDiag:{txDeltas:0,txChars:0,rxDeltas:0,rxChars:0,lastTxAt:0,lastRxAt:0},
+  streamDiag:{
+    inferTx:0,inferRx:0,inferAck:0,minimalRetries:0,
+    txDeltas:0,txChars:0,rxDeltas:0,rxChars:0,lastTxAt:0,lastRxAt:0,
+    lastInferTxAt:0,lastInferRxAt:0,lastInferAckAt:0
+  },
   streamFrames:new Map(),      // route+job -> coalesced outbound delta frame
   streamFrameMs:45,
   streamFrameChars:192,
@@ -3092,8 +3096,9 @@ function remoteModels(){
     for(const m of p.models||[]){
       const k=`${p.node}|${m}`;if(seen.has(k))continue;seen.add(k);
       const routes=routesForNode(p.node);
+      if(!routes.length)continue; // catalog only actionable providers, not advertisements without a live action route
       out.push({
-        model:m,source:'mesh',providerNode:p.node,peerId:routes[0]||p.id,label:p.label||p.node.slice(0,8),
+        model:m,source:'mesh',providerNode:p.node,peerId:routes[0],label:p.label||p.node.slice(0,8),
         load:Number(p.load)||0,capacity:Math.max(1,Number(p.capacity)||1),queue:Number(p.queue)||0,maxQueue:Math.max(1,Number(p.maxQueue)||1),
         routes:Math.max(1,routes.length),agentPublicAccess:!!p.agentPublicAccess,tps:Number(p.tps)||0,
         inferenceActive:!!p.inferenceActive,latency:Number(p.latency)||0,
@@ -5048,17 +5053,31 @@ async function handleRemoteInference(data,meta,wrapper){
   }
   if(state.seenJobs.has(data.id)){
     const rec=registerJobWatcher(data.id,wrapper,peerId);
-    // A repeated stable job id is a retransmission after route churn, not an error.
+    state.streamDiag.inferRx++;
+    state.streamDiag.lastInferRxAt=now();
+    // A repeated stable job id is a delivery/recovery retransmission, never
+    // another generation. Re-ACK the existing job immediately.
     if(rec.result){
       wrapper.actions.result.send(rec.result,{target:peerId}).catch(()=>{});
     }else{
-      sendJobState(wrapper,peerId,data.id,rec.status||'running',{retransmit:true});
+      sendJobState(wrapper,peerId,data.id,rec.status||'received',{
+        retransmit:true,envelope:data.compatibility_envelope?'minimal':'advanced'
+      });
     }
     return;
   }
   state.seenJobs.set(data.id,now());
   const replay=registerJobWatcher(data.id,wrapper,peerId);
   replay.status='received';
+  state.streamDiag.inferRx++;
+  state.streamDiag.lastInferRxAt=now();
+
+  // Transport-level ACK comes before authorization or local backend work.
+  // This distinguishes "request never reached provider" from every later failure.
+  sendJobState(wrapper,peerId,data.id,'received',{
+    envelope:data.compatibility_envelope?'minimal':'advanced'
+  });
+
   const peerMeta=state.peers.get(peerId);
   const auth=await authorizeRemoteJob(peerMeta,data);
   if(!auth.ok){
@@ -5086,6 +5105,12 @@ function handleRemoteState(data,meta,wrapper){
   if(p){
     p.state=data;
     p.lastStateAt=now();
+    if(data.status==='received'){
+      state.streamDiag.inferAck++;
+      state.streamDiag.lastInferAckAt=now();
+      p.deliveryAckAt=now();
+      if(data.envelope==='minimal')log('ok',`Remote job ${data.id.slice(0,8)} reached provider via minimal compatibility envelope.`);
+    }
     if(data.status==='queued')log('info',`Remote job ${data.id.slice(0,8)} queued at position ${data.position||'?'}.`);
     if(data.status==='running')log('info',`Remote job ${data.id.slice(0,8)} is running.`);
     if(data.status==='compat-retry'){
@@ -5573,6 +5598,7 @@ function renderStatePanel(){
     <div class="statline"><span>routing</span><span>AUTO BALANCED · capability + health weighted</span></div>
     <div class="statline"><span>model scope</span><span>${esc(state.serveModels)}</span></div>
     <div class="statline"><span>mesh models</span><span>${remoteModels().length} routeable model advertisement(s)</span></div>
+    <div class="statline"><span>infer delivery</span><span>TX ${state.streamDiag.inferTx} · RX ${state.streamDiag.inferRx} · ACK ${state.streamDiag.inferAck} · minimal ${state.streamDiag.minimalRetries}</span></div>
     <div class="statline"><span>stream I/O</span><span>TX ${state.streamDiag.txDeltas}/${state.streamDiag.txChars}c · RX ${state.streamDiag.rxDeltas}/${state.streamDiag.rxChars}c</span></div>
     <div class="statline"><span>NATS rendezvous</span><span>${esc(state.nats.status)} · ${state.nats.connections.size} fabric(s) · ${state.nats.candidates.size} candidates</span></div>
     <div class="statline"><span>NKN overlay</span><span>${esc(state.nkn.status)}${state.nkn.addr?' · '+esc(state.nkn.addr).slice(0,22)+'…':''}</span></div>
@@ -6322,10 +6348,10 @@ async function callRemote(peerId,model,prompt,providerNode=null,requestMeta={}){
     const grant=node?state.grants.get(node):null;
     attempt++;
     return new Promise(async(resolve,reject)=>{
-      let settled=false;
+      let settled=false,deliveryTimer=null;
       const finish=(fn,val)=>{
         if(settled)return;settled=true;
-        clearTimeout(timer);clearInterval(health);
+        clearTimeout(timer);clearTimeout(deliveryTimer);clearInterval(health);
         const current=state.pending.get(logicalId);
         if(current?.attempt===attempt)state.pending.delete(logicalId);
         fn(val);
@@ -6345,22 +6371,75 @@ async function callRemote(peerId,model,prompt,providerNode=null,requestMeta={}){
       state.pending.set(logicalId,{
         resolve:v=>finish(resolve,v),reject:e=>finish(reject,e),
         timer,health,peerId:routeId,providerNode:node,started:now(),attempt,
-        state:null,onDelta:requestMeta.on_delta||null,streamText:'',lastDeltaAt:0,lastStateAt:0
+        state:null,onDelta:requestMeta.on_delta||null,streamText:'',
+        lastDeltaAt:0,lastStateAt:0,deliveryAckAt:0,minimalRetrySent:false
       });
+      const advancedEnvelope={
+        id:logicalId,model,prompt,
+        messages:sanitizeInferenceMessages(requestMeta.messages,prompt),
+        tools:sanitizeRemoteTools(requestMeta.tools||[]),
+        grant:grant||null,agent:!!requestMeta.agent,
+        // Bootstrap access does not need historical merit proof on every request.
+        merit:localQuota.daily_used<state.bootstrapDailyLimit?null:meritProofBundle({compact:true}),
+        reasoning_mode:reasoningModeForRequest(requestMeta.reasoning_mode||state.reasoningMode),
+        response_mode:requestMeta.response_mode==='chunked'?'chunked':'stream',
+        chunk_size:clamp(Number(requestMeta.chunk_size)||state.responseChunkSize||CONFIG.defaultChunkSize,32,4096),
+        temperature:requestMeta.temperature??0.7,
+        max_tokens:requestMeta.max_tokens??CONFIG.defaultMaxTokens
+      };
+      const minimalEnvelope={
+        // Mirrors the reliable f912-era transport envelope. Same job ID means
+        // a late advanced copy can never double-run the provider.
+        id:logicalId,model,prompt,
+        grant:grant||null,agent:!!requestMeta.agent,
+        temperature:requestMeta.temperature??0.7,
+        max_tokens:requestMeta.max_tokens??CONFIG.defaultMaxTokens,
+        compatibility_envelope:true
+      };
+
       try{
-        await w.actions.infer.send({
-          id:logicalId,model,prompt,
-          messages:sanitizeInferenceMessages(requestMeta.messages,prompt),
-          tools:sanitizeRemoteTools(requestMeta.tools||[]),
-          grant:grant||null,agent:!!requestMeta.agent,
-          // Bootstrap access does not need historical merit proof on every request.
-          merit:localQuota.daily_used<state.bootstrapDailyLimit?null:meritProofBundle({compact:true}),
-          reasoning_mode:reasoningModeForRequest(requestMeta.reasoning_mode||state.reasoningMode),
-          response_mode:requestMeta.response_mode==='chunked'?'chunked':'stream',
-          chunk_size:clamp(Number(requestMeta.chunk_size)||state.responseChunkSize||CONFIG.defaultChunkSize,32,4096),
-          temperature:requestMeta.temperature??0.7,max_tokens:requestMeta.max_tokens??CONFIG.defaultMaxTokens
-        },{target:routeId});
-      }catch(e){finish(reject,e)}
+        state.streamDiag.inferTx++;
+        state.streamDiag.lastInferTxAt=now();
+        await w.actions.infer.send(advancedEnvelope,{target:routeId});
+
+        // Trystero/WebRTC send completion is not an application ACK. If the
+        // provider does not ACK or stream within 1.4s, retransmit the SAME job
+        // using the tiny historical envelope that is known to traverse reliably.
+        deliveryTimer=setTimeout(()=>{
+          const current=state.pending.get(logicalId);
+          if(
+            settled||!current||current.attempt!==attempt||
+            current.lastStateAt||current.lastDeltaAt||current.deliveryAckAt||
+            current.minimalRetrySent
+          )return;
+
+          current.minimalRetrySent=true;
+          state.streamDiag.minimalRetries++;
+          state.streamDiag.inferTx++;
+          state.streamDiag.lastInferTxAt=now();
+          log('warn',`No provider ACK for ${logicalId.slice(0,8)}; retrying same job with minimal f912 envelope.`);
+
+          Promise.resolve(
+            w.actions.infer.send(minimalEnvelope,{target:routeId})
+          ).catch(e=>{
+            log('warn',`Minimal inference envelope send failed: ${String(e?.message||e).slice(0,140)}`);
+          });
+        },1400);
+      }catch(firstSendErr){
+        // If the rich envelope itself cannot be serialized/transmitted, fall
+        // straight back to the minimal envelope on the same route/job.
+        try{
+          const current=state.pending.get(logicalId);
+          if(current)current.minimalRetrySent=true;
+          state.streamDiag.minimalRetries++;
+          state.streamDiag.inferTx++;
+          state.streamDiag.lastInferTxAt=now();
+          log('warn',`Advanced inference envelope failed (${String(firstSendErr?.message||firstSendErr).slice(0,120)}); sending minimal f912 envelope.`);
+          await w.actions.infer.send(minimalEnvelope,{target:routeId});
+        }catch(minErr){
+          finish(reject,minErr);
+        }
+      }
     });
   };
 
