@@ -7,7 +7,7 @@
 <meta name="description" content="Open Inference Mesh: a static-hostable, local-first peer-to-peer intelligence commons. People and agents can discover shared inference, use it within provider limits, and voluntarily contribute locally owned models so useful machine intelligence becomes broadly accessible rather than dependent on a single institution.">
 <meta name="robots" content="index,follow">
 <meta name="application-name" content="Open Inference Mesh">
-<meta name="oim-protocol" content="open-inference-mesh-v7.18">
+<meta name="oim-protocol" content="open-inference-mesh-v7.19">
 <meta name="agent-interface" content="WebMCP, window.OIM, same-origin postMessage RPC, CustomEvent RPC">
 <link rel="help" href="?api=docs" title="Open Inference Mesh machine API documentation">
 <link rel="alternate" type="application/json" href="?api=docs" title="OIM agent API">
@@ -1246,7 +1246,7 @@ const state = {
   joined: false,
   strategyModules: new Map(),
   strategyStatus: new Map(),
-  enabledStrategies: new Set(['nostr','torrent','mqtt','ipfs']),
+  enabledStrategies: new Set(['mqtt']),
   rooms: new Map(),          // strategy:logical-room -> wrapper
   peers: new Map(),          // transport peer id -> signed metadata
   nodeRoutes: new Map(),     // stable crypto node id -> Set(transport peer ids)
@@ -1263,12 +1263,14 @@ const state = {
   remoteQueue: [],
   usage: new Map(),          // stable requester node -> sliding-window records
   activeByNode: new Map(),
+  servingTelemetry: new Map(), // requester stable NodeID -> active/last served model + live TPS
   seenJobs: new Map(),
   jobReplay: new Map(),       // stable job id -> status/result + retransmit watchers
   recoveryKickAt: new Map(),    // stable node/global -> last discovery recovery kick
   manualPending: null,
   manualRouteSeq: 0,
   nknEnabled: true,
+  nknLazyTimer: null,
   nkn: {
     sdk:null,client:null,connected:false,addr:'',seed:'',rpc:'',status:'idle',
     startPromise:null,epoch:0,lastConnectLogAt:0,lastErrorLogAt:0
@@ -1374,6 +1376,15 @@ function log(level, message){
   box.append(line);
   while(box.children.length > 300) box.firstChild.remove();
   box.scrollTop = box.scrollHeight;
+}
+
+
+const discoveryWarnGate=new Map();
+function discoveryWarnLimited(key,message,intervalMs=30000){
+  const t=now(),last=Number(discoveryWarnGate.get(key)||0);
+  if(t-last<intervalMs)return;
+  discoveryWarnGate.set(key,t);
+  log('warn',message);
 }
 
 function uuid(){
@@ -1871,8 +1882,18 @@ function loadPolicy(){
     state.peerEnabled=new Set(Array.isArray(pe)?pe:[]);
     const g=JSON.parse(localStorage.getItem('oim.grants')||'[]');
     state.grants=new Map(Array.isArray(g)?g:[]);
-    const s=JSON.parse(localStorage.getItem('oim.strategies')||'["nostr","torrent","mqtt","ipfs"]');
-    state.enabledStrategies=new Set(Array.isArray(s)?s:['nostr','torrent','mqtt','ipfs']);
+    const s=JSON.parse(localStorage.getItem('oim.strategies')||'["mqtt"]');
+    state.enabledStrategies=new Set(Array.isArray(s)?s:['mqtt']);
+    if(localStorage.getItem('oim.quietDiscoveryV719')!=='1'){
+      // NATS + MQTT are the quiet baseline. These remain available as explicit
+      // opt-ins but are not allowed to hammer dead public relays on startup.
+      state.enabledStrategies.delete('nostr');
+      state.enabledStrategies.delete('torrent');
+      state.enabledStrategies.delete('ipfs');
+      state.enabledStrategies.add('mqtt');
+      localStorage.setItem('oim.quietDiscoveryV719','1');
+      setTimeout(()=>persistPolicy(),0);
+    }
     loadQuotaUsage();
     if(localStorage.getItem('oim.bootstrapQuotaV1')!=='1'){
       state.rpmLimit=10;
@@ -3247,7 +3268,11 @@ async function joinOneRoom(strategy,logical,kind,shard){
       handshakeTimeoutMs:14000,
       onJoinError:d=>{
         setStrategyStatus(strategy,'degraded',d?.error?.message||'peer ICE failure');
-        log('warn',`${CONFIG.strategyLabels[strategy]} peer join issue ${d?.peerId?.slice?.(0,8)||''}: ${d?.error?.message||d?.error||'unknown'}`);
+        discoveryWarnLimited(
+          `join:${strategy}:${String(d?.error?.message||d?.error||'unknown').slice(0,100)}`,
+          `${CONFIG.strategyLabels[strategy]} peer join issue ${d?.peerId?.slice?.(0,8)||''}: ${d?.error?.message||d?.error||'unknown'}`,
+          30000
+        );
       }
     });
   }catch(e){
@@ -3339,12 +3364,29 @@ async function joinMesh(){
     }else state.exploreShard=0;
 
     const results=await Promise.allSettled([...state.enabledStrategies].map(joinStrategy));
-    const [nknStarted,natsStarted]=await Promise.all([
-      state.nknEnabled?startNkn():Promise.resolve(false),
-      state.natsEnabled?startNats():Promise.resolve(false)
-    ]);
+    const natsStarted=state.natsEnabled?await startNats():false;
     const online=[...state.strategyStatus.values()].filter(x=>x.status==='online').length;
+
+    // NKN is a fallback overlay. Do not eagerly connect it while healthy
+    // NATS/MQTT discovery is already available.
+    let nknStarted=false;
+    if(!online&&!natsStarted&&state.nknEnabled)nknStarted=await startNkn();
+
     if(!online&&!nknStarted&&!natsStarted)throw new Error('no discovery, rendezvous, or overlay substrate could be started');
+
+    clearTimeout(state.nknLazyTimer);
+    state.nknLazyTimer=null;
+    if(state.nknEnabled&&!state.nkn.connected){
+      state.nkn.status='standby';
+      setNknStatus('standby','lazy fallback');
+      state.nknLazyTimer=setTimeout(async()=>{
+        state.nknLazyTimer=null;
+        if(!state.joined||!state.nknEnabled||state.nkn.connected)return;
+        const verified=stablePeerGroups().length;
+        const primaryRoutes=[...state.peers.values()].filter(p=>p.online&&p.verified&&p.strategy!=='nkn').length;
+        if(!verified||!primaryRoutes)await startNkn();
+      },12000);
+    }
 
     if($('#discoveryMode').value==='sharded')state.exploreTimer=setInterval(()=>rotateExploreRooms(),CONFIG.exploreIntervalMs);
     state.heartbeatTimer=setInterval(()=>broadcastHello(),CONFIG.heartbeatMs);
@@ -3364,7 +3406,9 @@ async function joinMesh(){
 function leaveMesh(){
   for(const key of [...state.rooms.keys()])leaveOneRoom(key);
   clearInterval(state.exploreTimer);clearInterval(state.heartbeatTimer);clearInterval(state.cleanupTimer);
+  clearTimeout(state.nknLazyTimer);
   state.exploreTimer=state.heartbeatTimer=state.cleanupTimer=null;
+  state.nknLazyTimer=null;
   state.joined=false;
   stopNkn();
   stopNats();
@@ -4762,12 +4806,59 @@ async function processRemoteQueue(){
   }
   renderStatePanel();scheduleAnnounce();
 }
+
+function servingTelemetryFor(node){
+  return state.servingTelemetry.get(String(node||''))||null;
+}
+function beginServingTelemetry(node,jobId,model){
+  node=String(node||'');if(!node)return null;
+  const old=state.servingTelemetry.get(node)||{};
+  const rec={
+    ...old,node,active:true,job_id:String(jobId||''),
+    model:String(model||'unknown'),started_at:now(),first_delta_at:0,
+    output_chars:0,estimated_output_tokens:0,live_tps:0,last_update_at:now()
+  };
+  state.servingTelemetry.set(node,rec);
+  renderPeers();
+  return rec;
+}
+function updateServingTelemetry(node,delta){
+  const rec=state.servingTelemetry.get(String(node||''));if(!rec?.active)return;
+  const t=now();
+  if(!rec.first_delta_at)rec.first_delta_at=t;
+  rec.output_chars+=String(delta||'').length;
+  rec.estimated_output_tokens=Math.max(0,Math.ceil(rec.output_chars/4));
+  const elapsed=Math.max(0.001,(t-rec.first_delta_at)/1000);
+  rec.live_tps=rec.estimated_output_tokens/elapsed;
+  rec.last_update_at=t;
+  state.servingTelemetry.set(rec.node,rec);
+  // Avoid repainting on every token.
+  if(t-Number(rec.last_render_at||0)>=250){
+    rec.last_render_at=t;
+    renderPeers();
+  }
+}
+function finishServingTelemetry(node,{ok=true,tps=0,model=null,jobId=null}={}){
+  node=String(node||'');if(!node)return;
+  const rec=state.servingTelemetry.get(node)||{node};
+  rec.active=false;
+  rec.last_ok=!!ok;
+  rec.last_model=String(model||rec.model||rec.last_model||'');
+  rec.last_job_id=String(jobId||rec.job_id||rec.last_job_id||'');
+  rec.last_tps=Math.max(0,Number(tps)||Number(rec.live_tps)||Number(rec.last_tps)||0);
+  rec.completed_at=now();
+  rec.last_update_at=now();
+  state.servingTelemetry.set(node,rec);
+  renderPeers();
+}
+
 async function executeRemoteJob(job){
   const {peerId,wrapper,data,auth}=job;
   const peerMeta=state.peers.get(peerId);
   if(!peerMeta)return;
   state.activeRemoteJobs++;
   state.activeByNode.set(peerMeta.node,activeForNode(peerMeta.node)+1);
+  beginServingTelemetry(peerMeta.node,data.id,auth.match.model);
   state.usage.set(peerMeta.node,[...cleanUsage(peerMeta.node),{ts:now(),tokens:auth.estTokens}]);
   recordPeerQuotaUse(peerMeta.node,data.id);
   scheduleAnnounce();sendJobState(wrapper,peerId,data.id,'running');
@@ -4784,6 +4875,7 @@ async function executeRemoteJob(job){
       reasoning_mode:reasoningModeForRequest(data.reasoning_mode||'auto'),
       response_mode:responseMode,chunk_size:chunkSize,
       on_delta:delta=>{
+        updateServingTelemetry(peerMeta.node,delta);
         sendJobDelta(wrapper,peerId,data.id,{delta,seq:seq++,mode:responseMode,kind:'content',ts:now()});
       },
       on_reasoning_delta:(delta,full)=>{
@@ -4829,9 +4921,11 @@ async function executeRemoteJob(job){
       queue_ms:Math.max(0,(job.started||now())-(job.enqueued||now()))
     });
     sendJobState(wrapper,peerId,data.id,'complete');
+    finishServingTelemetry(peerMeta.node,{ok:true,tps:sampleTps,model:auth.match.model,jobId:data.id});
   }catch(e){
     await sendJobResult(wrapper,peerId,{id:data.id,ok:false,error:String(e.message||e)},'failed');
     sendJobState(wrapper,peerId,data.id,'failed',{error:String(e.message||e)});
+    finishServingTelemetry(peerMeta.node,{ok:false,model:auth.match.model,jobId:data.id});
     log('err',`Mesh job failed: ${e.message}`);
   }finally{
     state.activeRemoteJobs--;
@@ -5115,7 +5209,7 @@ function stablePeerGroups(){
       g={node:p.node,label:p.label||p.node.slice(0,10),models:new Set(),strategies:new Set(),routes:0,
          share:false,agentPublicAccess:false,load:0,capacity:0,queue:0,maxQueue:0,
          tps:0,lastTps:0,perfTs:0,inferenceActive:false,lastActivityAt:0,merit:null,
-         nknAddr:'',bestPeerId:p.id,lastSeen:p.lastSeen||0};
+         serving:null,nknAddr:'',bestPeerId:p.id,lastSeen:p.lastSeen||0};
       groups.set(p.node,g);
     }
     g.routes++;g.strategies.add(p.strategy||'webrtc');g.share=g.share||!!p.share;g.agentPublicAccess=g.agentPublicAccess||!!p.agentPublicAccess;
@@ -5128,6 +5222,7 @@ function stablePeerGroups(){
     g.perfTs=Math.max(g.perfTs,Number(p.perfTs)||0);
     g.inferenceActive=g.inferenceActive||!!p.inferenceActive||Number(p.load)>0;
     g.lastActivityAt=Math.max(g.lastActivityAt,Number(p.lastActivityAt)||0);
+    g.serving=servingTelemetryFor(g.node)||g.serving;
     if(p.merit&&(!g.merit||(p.lastSeen||0)>=g.lastSeen))g.merit=sanitizeMeritSummary(p.merit);
     g.nknAddr=g.nknAddr||p.nknAddr||'';
     g.lastSeen=Math.max(g.lastSeen,p.lastSeen||0);
@@ -5277,6 +5372,16 @@ function renderPeers(){
         </div>
       </div>
       <div class="peer-meta">${g.agentPublicAccess?'AGENT OPEN · ':''}${g.routes} route${g.routes===1?'':'s'} · ${esc(g.strategies.join(' + '))} · ${g.load}/${Math.max(1,g.capacity)} active${g.queue?` · ${g.queue} queued`:''}</div>
+      ${g.serving?.active?`
+        <div class="peer-merit serving-live">
+          SERVING MODEL · ${esc(g.serving.model||'unknown')} · ${formatTps(g.serving.live_tps||0)}
+          · job ${esc(String(g.serving.job_id||'').slice(0,8))}
+        </div>
+      `:g.serving?.last_model?`
+        <div class="peer-merit">
+          LAST SERVED · ${esc(g.serving.last_model)} · ${formatTps(g.serving.last_tps||0)}
+        </div>
+      `:''}
       <div class="peer-models">${g.models.length?esc(g.models.slice(0,5).join(' · ')):'No models advertised'}${g.models.length>5?' · …':''}</div>
       <div class="peer-merit" data-peer-quota-node="${esc(g.node)}">FREE ${peerQuota.daily_used}/${peerQuota.daily_limit} · RPM ${peerQuota.minute_used}/${peerQuota.minute_limit}${peerQuota.cooldown_ms?` · cooldown ${quotaCooldownText(peerQuota.cooldown_ms)}`:''}</div>
       ${g.merit?`<div class="peer-merit">SEED ${formatMerit(g.merit.seed_units)} · LEECH ${formatMerit(g.merit.leech_units)} · S/L ${meritRatioText(g.merit.seed_units,g.merit.leech_units)} · <span class="${g.merit.balance_units>=0?'positive':'negative'}">BUDGET ${formatMerit(g.merit.leech_budget)}</span></div>`:''}
@@ -6001,9 +6106,14 @@ async function kickMeshRecovery(node=null){
     try{maintainNatsRtcPeers()}catch(_){}
   }
 
-  if(node&&state.nknEnabled&&state.nkn.connected){
-    const known=[...state.peers.values()].find(p=>p.node===node&&p.nknAddr);
-    if(known?.nknAddr)nknSendHello(known.nknAddr).catch(()=>{});
+  if(node&&state.nknEnabled){
+    if(!state.nkn.connected){
+      await startNkn().catch(()=>false);
+    }
+    if(state.nkn.connected){
+      const known=[...state.peers.values()].find(p=>p.node===node&&p.nknAddr);
+      if(known?.nknAddr)nknSendHello(known.nknAddr).catch(()=>{});
+    }
   }
 
   if(node){
@@ -7068,7 +7178,12 @@ $('#natsReservoirSize').addEventListener('change',()=>{
   state.natsReservoirSize=clamp(Number($('#natsReservoirSize').value)||384,32,2048);persistPolicy();maintainNatsRtcPeers();
 });
 
-$('#nknToggle').onclick=async()=>{state.nknEnabled=!state.nknEnabled;persistPolicy();$('#nknToggle').classList.toggle('on',state.nknEnabled);if(state.nknEnabled)await startNkn();else stopNkn()};
+$('#nknToggle').onclick=async()=>{
+  state.nknEnabled=!state.nknEnabled;
+  persistPolicy();$('#nknToggle').classList.toggle('on',state.nknEnabled);
+  clearTimeout(state.nknLazyTimer);state.nknLazyTimer=null;
+  if(state.nknEnabled)await startNkn();else stopNkn();
+};
 $('#copyNknBtn').onclick=async()=>{if(state.nkn.addr){await navigator.clipboard.writeText(state.nkn.addr);log('ok','NKN address copied.')}};
 $('#nknConnectBtn').onclick=async()=>{try{await connectNknAddress($('#nknPeerInput').value)}catch(e){log('err',`NKN route failed: ${e.message}`)}};
 $('#nknPeerInput').addEventListener('keydown',e=>{if(e.key==='Enter')$('#nknConnectBtn').click()});
