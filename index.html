@@ -1,0 +1,2182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>OPEN INFERENCE MESH</title>
+<style>
+:root{
+  --bg:#090a0b;
+  --panel:#0f1113;
+  --panel2:#131619;
+  --line:#252a2f;
+  --line2:#333a41;
+  --text:#e8eaed;
+  --muted:#8f99a3;
+  --dim:#5f6871;
+  --accent:#f4bd32;
+  --good:#6ed49b;
+  --warn:#e6ad50;
+  --bad:#e36d6d;
+  --cyan:#77c9d4;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;
+  --sans:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font-family:var(--sans)}
+body{overflow-x:hidden}
+button,input,select,textarea{font:inherit}
+button{cursor:pointer}
+a{color:var(--text)}
+::selection{background:var(--accent);color:#111}
+#app{min-height:100vh;display:flex;flex-direction:column}
+.topbar{
+  height:58px;position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:18px;
+  padding:0 18px;border-bottom:1px solid var(--line);background:rgba(9,10,11,.94);backdrop-filter:blur(14px)
+}
+.brand{font-family:var(--mono);font-weight:800;letter-spacing:.12em;font-size:13px;white-space:nowrap}
+.brand b{color:var(--accent)}
+.topstats{display:flex;align-items:center;gap:8px;flex:1;overflow:auto}
+.pill{
+  border:1px solid var(--line);padding:6px 9px;font-family:var(--mono);font-size:10px;color:var(--muted);
+  white-space:nowrap;background:#0b0d0f
+}
+.pill strong{color:var(--text)}
+.pill.good{border-color:#28523d;color:var(--good)}
+.pill.warn{border-color:#5a4422;color:var(--warn)}
+.pill.bad{border-color:#5c2f2f;color:var(--bad)}
+.toolbar{display:flex;gap:7px}
+.btn{
+  border:1px solid var(--line2);background:#121519;color:var(--text);padding:8px 11px;
+  font:700 10px var(--mono);letter-spacing:.06em;text-transform:uppercase
+}
+.btn:hover{border-color:#65707a;background:#171b20}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#0c0d0e}
+.btn.good{border-color:#376a4f;color:var(--good)}
+.btn.bad{border-color:#6d3636;color:var(--bad)}
+.btn.small{padding:5px 8px;font-size:9px}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.layout{
+  flex:1;display:grid;grid-template-columns:310px minmax(420px,1fr) 340px;
+  min-height:calc(100vh - 58px)
+}
+.sidebar,.rightbar{border-right:1px solid var(--line);background:#0b0d0f;min-width:0}
+.rightbar{border-right:0;border-left:1px solid var(--line)}
+.center{min-width:0;background:var(--bg);display:flex;flex-direction:column}
+.section{border-bottom:1px solid var(--line);padding:13px}
+.section h2{
+  margin:0 0 11px;font:800 10px var(--mono);letter-spacing:.13em;text-transform:uppercase;color:var(--muted)
+}
+.row{display:flex;gap:7px;align-items:center}
+.row.wrap{flex-wrap:wrap}
+.row + .row{margin-top:7px}
+.field{
+  width:100%;border:1px solid var(--line);background:#090b0d;color:var(--text);padding:8px 9px;
+  outline:none;font:11px var(--mono)
+}
+.field:focus{border-color:#5f6973}
+.field::placeholder{color:#505861}
+select.field{appearance:none}
+.label{font:9px var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:.08em;margin:9px 0 5px}
+.mini{font:10px/1.5 var(--mono);color:var(--muted)}
+.hint{font:11px/1.55 var(--sans);color:var(--muted)}
+.hint strong{color:var(--text)}
+.status-dot{width:7px;height:7px;border-radius:50%;background:var(--dim);display:inline-block;box-shadow:0 0 0 3px rgba(255,255,255,.02)}
+.status-dot.good{background:var(--good);box-shadow:0 0 12px rgba(110,212,155,.4)}
+.status-dot.warn{background:var(--warn)}
+.status-dot.bad{background:var(--bad)}
+.switch{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 0;border-top:1px dashed #1e2328}
+.switch:first-child{border-top:0}
+.toggle{width:36px;height:18px;border:1px solid var(--line2);background:#111418;position:relative;flex:0 0 auto}
+.toggle::after{content:"";width:12px;height:12px;position:absolute;left:2px;top:2px;background:#66717a;transition:.15s}
+.toggle.on{border-color:#715a1d;background:#2b2413}
+.toggle.on::after{left:20px;background:var(--accent)}
+.endpoint,.peer-card{
+  border:1px solid var(--line);background:#0d0f11;padding:9px;margin-top:7px
+}
+.endpoint-head,.peer-head{display:flex;justify-content:space-between;gap:8px;align-items:center}
+.endpoint-name,.peer-id{font:700 10px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.endpoint-url{font:9px var(--mono);color:var(--dim);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tags{display:flex;gap:4px;flex-wrap:wrap;margin-top:7px}
+.tag{border:1px solid var(--line);padding:3px 5px;font:8px var(--mono);color:var(--muted);max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.tag.good{border-color:#295039;color:var(--good)}
+.tag.warn{border-color:#594821;color:var(--warn)}
+.topology{
+  min-height:220px;border-bottom:1px solid var(--line);position:relative;overflow:hidden;
+  background:
+   linear-gradient(rgba(255,255,255,.018) 1px,transparent 1px),
+   linear-gradient(90deg,rgba(255,255,255,.018) 1px,transparent 1px);
+  background-size:28px 28px
+}
+#meshCanvas{width:100%;height:100%;position:absolute;inset:0}
+.topology-overlay{position:absolute;left:12px;top:10px;pointer-events:none}
+.topology-title{font:800 10px var(--mono);letter-spacing:.11em;color:var(--muted)}
+.topology-sub{font:9px var(--mono);color:var(--dim);margin-top:4px}
+.chat{flex:1;display:flex;flex-direction:column;min-height:320px}
+.chat-head{display:flex;gap:8px;padding:10px;border-bottom:1px solid var(--line);background:#0b0d0f}
+.chat-head .field{width:auto;min-width:0}
+#modelSelect{flex:1}
+#routeSelect{width:120px}
+.messages{flex:1;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:11px}
+.msg{max-width:86%;border:1px solid var(--line);background:#0d0f12;padding:10px 11px;font:12px/1.55 var(--sans);white-space:pre-wrap;word-break:break-word}
+.msg.user{align-self:flex-end;background:#17150d;border-color:#4e421f}
+.msg.assistant{align-self:flex-start}
+.msg.system{align-self:center;max-width:95%;font:10px/1.5 var(--mono);color:var(--muted);background:#0a0c0e}
+.msg .meta{font:8px var(--mono);color:var(--dim);margin-bottom:6px;text-transform:uppercase}
+.composer{border-top:1px solid var(--line);padding:10px;background:#0b0d0f}
+.composer textarea{resize:vertical;min-height:76px;max-height:240px}
+.composer-actions{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:7px}
+kbd{font:9px var(--mono);border:1px solid var(--line);padding:2px 4px;color:var(--muted)}
+.tabs{display:flex;border-bottom:1px solid var(--line)}
+.tab{flex:1;border:0;border-right:1px solid var(--line);background:#0b0d0f;color:var(--dim);padding:9px;font:800 9px var(--mono);letter-spacing:.08em}
+.tab:last-child{border-right:0}
+.tab.active{background:#121519;color:var(--accent)}
+.tabpane{display:none;padding:12px}
+.tabpane.active{display:block}
+.code{
+  background:#080a0c;border:1px solid var(--line);padding:9px;overflow:auto;
+  font:9px/1.55 var(--mono);color:#cbd1d6;white-space:pre-wrap;word-break:break-word;position:relative
+}
+.copy{position:absolute;right:5px;top:5px}
+.callout{border-left:2px solid var(--accent);padding:8px 9px;background:#11100c;font:10px/1.55 var(--mono);color:var(--muted);margin:8px 0}
+.callout.good{border-color:var(--good);background:#0d120f}
+.callout.bad{border-color:var(--bad);background:#130d0d}
+details{border-top:1px solid var(--line)}
+details summary{padding:10px 12px;cursor:pointer;font:800 9px var(--mono);letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+details[open] summary{color:var(--text)}
+.details-body{padding:0 12px 12px}
+.log{
+  height:180px;overflow:auto;background:#080a0c;border-top:1px solid var(--line);padding:8px;
+  font:9px/1.45 var(--mono);color:#7f8992
+}
+.logline{display:grid;grid-template-columns:58px 52px 1fr;gap:6px}
+.logline .lvl.info{color:var(--cyan)}
+.logline .lvl.ok{color:var(--good)}
+.logline .lvl.warn{color:var(--warn)}
+.logline .lvl.err{color:var(--bad)}
+.banner{display:none;border-bottom:1px solid #65451d;background:#191208;padding:9px 13px;font:10px/1.5 var(--mono);color:var(--warn)}
+.banner.show{display:block}
+.metric-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.metric{border:1px solid var(--line);background:#0a0c0e;padding:8px}
+.metric .v{font:800 17px var(--mono)}
+.metric .k{font:8px var(--mono);color:var(--dim);text-transform:uppercase;margin-top:3px}
+.empty{padding:12px;border:1px dashed var(--line);color:var(--dim);font:9px/1.5 var(--mono);text-align:center}
+.progress{height:3px;background:#161a1e;overflow:hidden}
+.progress>i{display:block;height:100%;background:var(--accent);width:0%;transition:.2s}
+.footer-note{font:8px/1.5 var(--mono);color:#4d555d;padding:10px 12px}
+@media(max-width:1100px){
+  .layout{grid-template-columns:280px 1fr}.rightbar{display:none}
+}
+@media(max-width:760px){
+  .topbar{height:auto;min-height:58px;flex-wrap:wrap;padding:10px}.toolbar{width:100%}
+  .layout{display:block}.sidebar{border-right:0}.center{min-height:680px}
+  .sidebar .section.optional-mobile{display:none}
+  .topology{height:200px}
+}
+
+.router-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.router{
+  border:1px solid var(--line);background:#0a0c0e;padding:8px;text-align:left;color:var(--text);
+  font:800 9px var(--mono);letter-spacing:.06em
+}
+.router.on{border-color:#48614e;background:#0d1410;color:var(--good)}
+.router.loading{border-color:#5a4927;color:var(--warn)}
+.router.err{border-color:#663838;color:var(--bad)}
+.router small{display:block;font:8px/1.4 var(--mono);font-weight:400;color:var(--dim);margin-top:3px;letter-spacing:0}
+.control-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.control-grid.three{grid-template-columns:1fr 1fr 1fr}
+.statline{display:flex;justify-content:space-between;gap:10px;border-top:1px dashed #20252a;padding:6px 0;font:9px var(--mono)}
+.statline:first-child{border-top:0}
+.statline span:last-child{color:var(--text);text-align:right}
+.queue-item{border:1px solid var(--line);background:#090b0d;padding:7px;margin-top:5px;font:9px/1.45 var(--mono);color:var(--muted)}
+.queue-item strong{color:var(--text)}
+.badge{display:inline-block;padding:2px 5px;border:1px solid var(--line);font:8px var(--mono);color:var(--muted)}
+.badge.good{color:var(--good);border-color:#2b553d}.badge.warn{color:var(--warn);border-color:#594821}.badge.bad{color:var(--bad);border-color:#653535}
+textarea.compact{min-height:55px;resize:vertical}
+
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="brand"><b>OPEN</b> / INFERENCE MESH</div>
+    <div class="topstats">
+      <div id="securePill" class="pill"><strong>HTTPS</strong> —</div>
+      <div id="lnaPill" class="pill"><strong>LAN</strong> ?</div>
+      <div id="meshPill" class="pill"><strong>MESH</strong> BOOT</div>
+      <div id="peerPill" class="pill"><strong>PEERS</strong> 0</div>
+      <div id="modelPill" class="pill"><strong>MODELS</strong> 0</div>
+    </div>
+    <div class="toolbar">
+      <button id="scanBtn" class="btn">scan local</button>
+      <button id="joinBtn" class="btn primary">join mesh</button>
+    </div>
+  </header>
+
+  <div id="compatBanner" class="banner"></div>
+
+  <main class="layout">
+    <aside class="sidebar">
+      <section class="section">
+        <h2>Node / identity</h2>
+        <div class="label">Persistent browser node id</div>
+        <div class="row">
+          <input id="nodeId" class="field" readonly>
+          <button id="copyNodeBtn" class="btn small">copy</button>
+        </div>
+        <div class="row">
+          <span id="identityDot" class="status-dot warn"></span>
+          <span id="identityText" class="mini">initializing</span>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>Local network access</h2>
+        <div class="hint">
+          This page runs from HTTPS and can bridge to inference servers on this machine or LAN.
+          Chrome 142+ may ask permission before public HTTPS pages can reach loopback/private addresses.
+        </div>
+        <div class="row" style="margin-top:9px">
+          <button id="grantLanBtn" class="btn good" style="flex:1">grant LAN access</button>
+          <button id="checkPermBtn" class="btn">check</button>
+        </div>
+        <div id="permDetail" class="mini" style="margin-top:7px">permission state unknown</div>
+      </section>
+
+      <section class="section">
+        <h2>Inference engines</h2>
+        <div class="row">
+          <input id="endpointInput" class="field" placeholder="http://192.168.1.20:8000">
+          <button id="addEndpointBtn" class="btn">add</button>
+        </div>
+        <div class="row">
+          <input id="apiKeyInput" class="field" type="password" placeholder="optional API key (stays local)">
+        </div>
+        <div id="endpointList"></div>
+      </section>
+
+      <section class="section">
+        <h2>Inference distribution / access</h2>
+        <div class="switch">
+          <div>
+            <div class="mini" style="color:var(--text)">Advertise models</div>
+            <div class="mini">signed capability + queue state</div>
+          </div>
+          <button id="advertiseToggle" class="toggle on" aria-label="Advertise models"></button>
+        </div>
+        <div class="switch">
+          <div>
+            <div class="mini" style="color:var(--text)">Share inference</div>
+            <div class="mini">serve scoped inference jobs</div>
+          </div>
+          <button id="shareToggle" class="toggle" aria-label="Share inference"></button>
+        </div>
+
+        <div class="label">Access policy</div>
+        <select id="accessMode" class="field">
+          <option value="capability" selected>CAPABILITY GRANT ONLY</option>
+          <option value="allowlist">ALLOWLIST + CAPABILITY GRANTS</option>
+          <option value="verified">ANY VERIFIED MESH IDENTITY</option>
+        </select>
+
+        <div class="label">Served model scope</div>
+        <input id="serveModels" class="field" value="*" placeholder="* or exact model-a,model-b">
+
+        <div class="label">Concurrency / queue</div>
+        <div class="control-grid">
+          <div><div class="mini">global active</div><input id="maxJobs" class="field" type="number" min="1" max="32" value="2"></div>
+          <div><div class="mini">global queued</div><input id="maxQueue" class="field" type="number" min="0" max="256" value="16"></div>
+          <div><div class="mini">peer active</div><input id="perPeerConcurrent" class="field" type="number" min="1" max="16" value="1"></div>
+          <div><div class="mini">peer queued</div><input id="perPeerQueue" class="field" type="number" min="0" max="64" value="4"></div>
+        </div>
+
+        <div class="label">Sliding-window limits / peer</div>
+        <div class="control-grid">
+          <div><div class="mini">requests / min</div><input id="rpmLimit" class="field" type="number" min="1" max="10000" value="12"></div>
+          <div><div class="mini">est. tokens / min</div><input id="tpmLimit" class="field" type="number" min="256" max="10000000" value="32768"></div>
+        </div>
+        <div class="control-grid" style="margin-top:7px">
+          <div><div class="mini">max output tokens</div><input id="maxRemoteTokens" class="field" type="number" min="16" max="65536" value="4096"></div>
+          <div><div class="mini">queue timeout sec</div><input id="queueTimeoutSec" class="field" type="number" min="5" max="3600" value="120"></div>
+        </div>
+
+        <div class="label">Capability grants</div>
+        <div class="control-grid">
+          <div><div class="mini">grant lifetime hours</div><input id="grantHours" class="field" type="number" min="1" max="8760" value="24"></div>
+          <div><div class="mini">model scope</div><input id="grantModels" class="field" value="*" placeholder="* or model-a,model-b"></div>
+        </div>
+        <div class="row" style="margin-top:7px">
+          <input id="grantImport" class="field" placeholder="paste signed OIM capability token">
+          <button id="importGrantBtn" class="btn small">import</button>
+        </div>
+        <div id="grantSummary" class="mini" style="margin-top:6px">0 imported grants · 0 allowlisted identities</div>
+
+        <div class="callout bad">
+          Local API keys are never sent to peers. Shared service is inference-only: no arbitrary URL proxy, filesystem access, shell, or tool execution. Capability tokens are identity-bound and signed by the serving node.
+        </div>
+      </section>
+
+      <section class="section optional-mobile">
+        <h2>Discovery / fallback planes</h2>
+        <div class="label">Mesh namespace</div>
+        <input id="namespaceInput" class="field" value="open-inference-mesh-v2">
+
+        <div class="label">Independent signaling substrates</div>
+        <div class="router-grid">
+          <button class="router on strategyToggle" data-strategy="nostr">NOSTR<small>large relay federation</small></button>
+          <button class="router on strategyToggle" data-strategy="torrent">BITTORRENT<small>WebTorrent trackers</small></button>
+          <button class="router on strategyToggle" data-strategy="mqtt">MQTT<small>public broker federation</small></button>
+          <button class="router on strategyToggle" data-strategy="ipfs">WAKU<small>libp2p/Waku light node</small></button>
+          <button class="router strategyToggle" data-strategy="wsrelay">WS RELAY<small>user/community supplied</small></button>
+        </div>
+
+        <div class="label">Topology</div>
+        <select id="discoveryMode" class="field">
+          <option value="sharded" selected>sharded + rotating exploration</option>
+          <option value="single">single room (small tests only)</option>
+        </select>
+        <div class="metric-grid" style="margin-top:8px">
+          <div class="metric"><div id="primaryShard" class="v">—</div><div class="k">home shard</div></div>
+          <div class="metric"><div id="exploreShard" class="v">—</div><div class="k">explore shard</div></div>
+        </div>
+
+        <div class="label">Optional community WebSocket relays</div>
+        <textarea id="wsRelayUrls" class="field compact" placeholder="wss://relay1.example&#10;wss://relay2.example"></textarea>
+
+        <div class="label">Optional TURN fallbacks (JSON array)</div>
+        <textarea id="turnConfig" class="field compact" placeholder='[{"urls":"turn:host:3478","username":"u","credential":"p"}]'></textarea>
+
+        <div class="label">Zero-infrastructure manual rendezvous</div>
+        <textarea id="manualSignal" class="field compact" placeholder="offer / answer rendezvous token"></textarea>
+        <div class="row">
+          <button id="manualOfferBtn" class="btn small">create offer</button>
+          <button id="manualAnswerBtn" class="btn small">answer offer</button>
+          <button id="manualFinishBtn" class="btn small">accept answer</button>
+        </div>
+        <div class="mini" style="margin-top:5px">Exchange the token with the intended peer over any channel. Tokens contain WebRTC connection metadata; treat them as short-lived.</div>
+
+        <div class="hint" style="margin-top:8px">
+          Discovery planes are independent. After signaling, inference traffic is direct encrypted WebRTC whenever possible. TURN is only used when configured and direct ICE cannot connect.
+        </div>
+      </section>
+    </aside>
+
+    <section class="center">
+      <div class="topology">
+        <canvas id="meshCanvas"></canvas>
+        <div class="topology-overlay">
+          <div class="topology-title">LIVE PEER TOPOLOGY</div>
+          <div id="topologySub" class="topology-sub">waiting for mesh</div>
+        </div>
+      </div>
+
+      <div class="chat">
+        <div class="chat-head">
+          <select id="routeSelect" class="field">
+            <option value="auto" selected>AUTO ROUTE</option>
+            <option value="local">LOCAL ONLY</option>
+            <option value="mesh">MESH ONLY</option>
+          </select>
+          <select id="modelSelect" class="field">
+            <option value="">No model discovered</option>
+          </select>
+          <button id="refreshModelsBtn" class="btn">refresh</button>
+        </div>
+        <div id="messages" class="messages">
+          <div class="msg system">
+            <div class="meta">mesh boot</div>
+            Add or scan a local inference endpoint, then join the mesh. AUTO ROUTE prefers locally owned inference and uses a willing peer when the selected model is remote.
+          </div>
+        </div>
+        <div class="composer">
+          <textarea id="promptInput" class="field" placeholder="Ask the mesh…"></textarea>
+          <div class="composer-actions">
+            <div class="mini"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> send · no tool execution · text inference only</div>
+            <button id="sendBtn" class="btn primary">run inference</button>
+          </div>
+          <div class="progress"><i id="jobProgress"></i></div>
+        </div>
+      </div>
+
+      <div id="log" class="log"></div>
+    </section>
+
+    <aside class="rightbar">
+      <div class="tabs">
+        <button class="tab active" data-tab="peers">PEERS</button>
+        <button class="tab" data-tab="state">STATE</button>
+        <button class="tab" data-tab="deploy">DEPLOY</button>
+        <button class="tab" data-tab="about">ARCH</button>
+      </div>
+
+      <div id="tab-peers" class="tabpane active">
+        <div class="row" style="justify-content:space-between">
+          <div>
+            <div class="label" style="margin:0">Connected mesh peers</div>
+            <div id="peerSummary" class="mini">0 peers</div>
+          </div>
+          <button id="announceBtn" class="btn small">announce</button>
+        </div>
+        <div id="peerList"></div>
+      </div>
+
+
+      <div id="tab-state" class="tabpane">
+        <div class="label">Provider state</div>
+        <div id="providerState"></div>
+
+        <div class="label">Discovery planes</div>
+        <div id="routerState"></div>
+
+        <div class="label">Remote queue</div>
+        <div id="queueState"></div>
+
+        <div class="label">Imported capability grants</div>
+        <div id="grantState"></div>
+
+        <div class="callout">
+          Queue and rate state is signed into capability announcements. A peer can choose another provider before sending work when a node is saturated.
+        </div>
+      </div>
+
+      <div id="tab-deploy" class="tabpane">
+        <div class="callout good">
+          Run any OpenAI-compatible local server. Keep the model on hardware you own; this page discovers it and optionally advertises it to peers.
+        </div>
+
+        <details open>
+          <summary>Ollama · easiest</summary>
+          <div class="details-body">
+            <div class="hint">Install Ollama, pull any model you want, then allow this HTTPS origin if needed.</div>
+            <div class="code"><button class="btn small copy" data-copy="ollama">copy</button><span id="code-ollama">ollama pull MODEL_NAME
+OLLAMA_ORIGINS="ORIGIN_HERE" ollama serve</span></div>
+            <div class="mini" style="margin-top:6px">Default endpoint: http://127.0.0.1:11434</div>
+          </div>
+        </details>
+
+        <details>
+          <summary>llama.cpp · GGUF</summary>
+          <div class="details-body">
+            <div class="hint">Download a GGUF, then expose llama-server. For LAN use, bind to 0.0.0.0 and restrict CORS to this page's exact origin.</div>
+            <div class="code"><button class="btn small copy" data-copy="llama">copy</button><span id="code-llama">./llama-server \
+  -m /path/model.gguf \
+  --host 0.0.0.0 \
+  --port 8080 \
+  --cors-origins "ORIGIN_HERE"</span></div>
+            <div class="mini" style="margin-top:6px">Default probe: http://127.0.0.1:8080</div>
+          </div>
+        </details>
+
+        <details>
+          <summary>vLLM · GPU server</summary>
+          <div class="details-body">
+            <div class="hint">Best for high-throughput CUDA/ROCm nodes. Do not expose an unauthenticated vLLM server directly to the public Internet.</div>
+            <div class="code"><button class="btn small copy" data-copy="vllm">copy</button><span id="code-vllm">vllm serve MODEL_ID \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --allowed-origins '["ORIGIN_HERE"]'</span></div>
+            <div class="mini" style="margin-top:6px">Default probe: http://127.0.0.1:8000</div>
+          </div>
+        </details>
+
+        <details>
+          <summary>LM Studio / LocalAI</summary>
+          <div class="details-body">
+            <div class="hint">Enable their OpenAI-compatible local server, then add the displayed URL in the left panel.</div>
+            <div class="code">LM Studio common: http://127.0.0.1:1234
+LocalAI common:   http://127.0.0.1:8080</div>
+          </div>
+        </details>
+
+        <details>
+          <summary>LAN server checklist</summary>
+          <div class="details-body">
+            <div class="hint">
+              1. Bind the inference server to a LAN interface.<br>
+              2. Configure CORS for this page's HTTPS origin.<br>
+              3. Use the server's private IP in “Inference engines.”<br>
+              4. Grant browser Local Network Access when prompted.<br>
+              5. Keep your OS firewall enabled and expose only the inference port on trusted LANs.
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <div id="tab-about" class="tabpane">
+        <div class="label">What this file is</div>
+        <div class="hint">
+          A zero-backend browser node. Static hosting supplies only this HTML; peer discovery fans out over independent public signaling substrates, with a manual offer/answer path that needs no signaling service at all. Inference traffic travels peer-to-peer.
+        </div>
+        <div class="label">Data path</div>
+        <div class="code">browser
+  │
+  ├─ local fetch ─────► Ollama / llama.cpp / vLLM
+  │
+  └─ WebRTC ─────────► peer browser
+                         │
+                         └─ local inference engine</div>
+        <div class="label">Discovery path</div>
+        <div class="code">HTTPS static page
+    │
+parallel Trystero signaling
+    │
+Nostr + BitTorrent + MQTT + Waku
+    │
+WebRTC handshake
+    │
+direct encrypted data channel</div>
+        <div class="callout">
+          Browser security intentionally prevents arbitrary raw LAN scanning/mDNS. The page therefore probes standard localhost ports and user-specified LAN endpoints instead of pretending to enumerate devices it cannot legally see.
+        </div>
+        <div class="label">Scale strategy</div>
+        <div class="hint">
+          SHARDED mode joins a stable home shard plus a rotating exploration shard. This keeps WebRTC degree bounded while still exposing nodes to changing parts of the population.
+        </div>
+      </div>
+
+      <div class="footer-note">
+        STATIC HOST SAFE · MULTI-PLANE DISCOVERY · SIGNED IDENTITIES · CAPABILITY-SCOPED INFERENCE · QUEUE/RATE STATE · REMOTE INFERENCE OFF BY DEFAULT
+      </div>
+    </aside>
+  </main>
+</div>
+
+<script type="module">
+/* ============================================================
+   OPEN INFERENCE MESH
+   One-file static browser node.
+   Requires HTTPS for full Local Network Access behavior.
+   ============================================================ */
+
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const now = () => Date.now();
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const clamp = (x,a,b) => Math.max(a,Math.min(b,x));
+
+const CONFIG = {
+  trysteroVersion: '0.25.3',
+  appId: 'open-inference-mesh-browser-v2',
+  defaultNamespace: 'open-inference-mesh-v2',
+  shardCount: 64,
+  exploreIntervalMs: 45_000,
+  heartbeatMs: 12_000,
+  peerStaleMs: 70_000,
+  requestTimeoutMs: 240_000,
+  defaultMaxTokens: 2048,
+  strategyPackages: {
+    nostr: '@trystero-p2p/nostr',
+    torrent: '@trystero-p2p/torrent',
+    mqtt: '@trystero-p2p/mqtt',
+    ipfs: '@trystero-p2p/ipfs',
+    wsrelay: '@trystero-p2p/ws-relay'
+  },
+  strategyLabels: {
+    nostr: 'NOSTR',
+    torrent: 'BITTORRENT',
+    mqtt: 'MQTT',
+    ipfs: 'WAKU',
+    wsrelay: 'WS-RELAY',
+    manual: 'MANUAL'
+  },
+  commonEndpoints: [
+    ['Ollama','http://127.0.0.1:11434'],
+    ['llama.cpp','http://127.0.0.1:8080'],
+    ['vLLM','http://127.0.0.1:8000'],
+    ['LM Studio','http://127.0.0.1:1234'],
+    ['LocalAI','http://127.0.0.1:8081'],
+    ['alt','http://127.0.0.1:5000']
+  ]
+};
+
+const state = {
+  nodeId: '',
+  identity: null,
+  joined: false,
+  strategyModules: new Map(),
+  strategyStatus: new Map(),
+  enabledStrategies: new Set(['nostr','torrent','mqtt','ipfs']),
+  rooms: new Map(),          // strategy:logical-room -> wrapper
+  peers: new Map(),          // transport peer id -> signed metadata
+  nodeRoutes: new Map(),     // stable crypto node id -> Set(transport peer ids)
+  endpoints: new Map(),
+  pending: new Map(),
+  grants: new Map(),         // issuer node -> signed capability token
+  allowlist: new Set(),
+  remoteQueue: [],
+  usage: new Map(),          // stable requester node -> sliding-window records
+  activeByNode: new Map(),
+  seenJobs: new Map(),
+  manualPending: null,
+  manualRouteSeq: 0,
+  activeRemoteJobs: 0,
+  localActiveJobs: 0,
+  advertise: true,
+  share: false,
+  accessMode: 'capability',
+  maxJobs: 2,
+  perPeerConcurrent: 1,
+  perPeerQueue: 4,
+  maxQueue: 16,
+  rpmLimit: 12,
+  tpmLimit: 32768,
+  maxRemoteTokens: 4096,
+  queueTimeoutSec: 120,
+  grantHours: 24,
+  grantModels: '*',
+  serveModels: '*',
+  ingressUsage: new Map(),
+  primaryShard: null,
+  exploreShard: null,
+  exploreTimer: null,
+  heartbeatTimer: null,
+  cleanupTimer: null,
+  topologyTick: 0,
+  lastRoute: null
+};
+
+function log(level, message){
+  const box = $('#log');
+  const t = new Date().toLocaleTimeString([], {hour12:false});
+  const line = document.createElement('div');
+  line.className = 'logline';
+  line.innerHTML = `<span>${esc(t)}</span><span class="lvl ${esc(level)}">${esc(level.toUpperCase())}</span><span>${esc(message)}</span>`;
+  box.append(line);
+  while(box.children.length > 300) box.firstChild.remove();
+  box.scrollTop = box.scrollHeight;
+}
+
+function uuid(){
+  if(crypto.randomUUID) return crypto.randomUUID();
+  const a = crypto.getRandomValues(new Uint8Array(16));
+  a[6]=(a[6]&15)|64; a[8]=(a[8]&63)|128;
+  return [...a].map((x,i)=>([4,6,8,10].includes(i)?'-':'')+x.toString(16).padStart(2,'0')).join('');
+}
+
+async function sha256(text){
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(buf)].map(x=>x.toString(16).padStart(2,'0')).join('');
+}
+
+const enc = new TextEncoder();
+function bytesToB64(bytes){
+  let s=''; const u=new Uint8Array(bytes);
+  for(let i=0;i<u.length;i+=0x8000)s+=String.fromCharCode(...u.subarray(i,i+0x8000));
+  return btoa(s);
+}
+function b64ToBytes(s){
+  const b=atob(s),u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u;
+}
+function stableStringify(value){
+  if(value===null||typeof value!=='object')return JSON.stringify(value);
+  if(Array.isArray(value))return '['+value.map(stableStringify).join(',')+']';
+  return '{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+stableStringify(value[k])).join(',')+'}';
+}
+async function sha256Bytes(bytes){
+  const buf=await crypto.subtle.digest('SHA-256',bytes);
+  return [...new Uint8Array(buf)].map(x=>x.toString(16).padStart(2,'0')).join('');
+}
+function bytesToB64Url(bytes){
+  return bytesToB64(bytes).replaceAll('+','-').replaceAll('/','_').replaceAll('=','');
+}
+function b64UrlToBytes(s){
+  s=s.replaceAll('-','+').replaceAll('_','/');
+  while(s.length%4)s+='=';
+  return b64ToBytes(s);
+}
+async function generateKx(){
+  const pair=await crypto.subtle.generateKey({name:'ECDH',namedCurve:'P-256'},true,['deriveBits','deriveKey']);
+  return {
+    pub:bytesToB64(await crypto.subtle.exportKey('spki',pair.publicKey)),
+    priv:bytesToB64(await crypto.subtle.exportKey('pkcs8',pair.privateKey))
+  };
+}
+async function generateIdentity(){
+  let alg='Ed25519',pair;
+  try{pair=await crypto.subtle.generateKey({name:'Ed25519'},true,['sign','verify']);}
+  catch(_){alg='ECDSA-P256';pair=await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);}
+  const pub=await crypto.subtle.exportKey('spki',pair.publicKey);
+  const priv=await crypto.subtle.exportKey('pkcs8',pair.privateKey);
+  const nodeId=await sha256Bytes(pub);
+  const kx=await generateKx();
+  const stored={alg,nodeId,pub:bytesToB64(pub),priv:bytesToB64(priv),kxPub:kx.pub,kxPriv:kx.priv};
+  localStorage.setItem('oim.identity',JSON.stringify(stored));
+  return stored;
+}
+async function importIdentity(stored){
+  if(!stored.kxPub||!stored.kxPriv){
+    const kx=await generateKx();
+    stored={...stored,kxPub:kx.pub,kxPriv:kx.priv};
+    localStorage.setItem('oim.identity',JSON.stringify(stored));
+  }
+  const pubBytes=b64ToBytes(stored.pub),privBytes=b64ToBytes(stored.priv);
+  let publicKey,privateKey;
+  if(stored.alg==='Ed25519'){
+    publicKey=await crypto.subtle.importKey('spki',pubBytes,{name:'Ed25519'},true,['verify']);
+    privateKey=await crypto.subtle.importKey('pkcs8',privBytes,{name:'Ed25519'},false,['sign']);
+  }else{
+    publicKey=await crypto.subtle.importKey('spki',pubBytes,{name:'ECDSA',namedCurve:'P-256'},true,['verify']);
+    privateKey=await crypto.subtle.importKey('pkcs8',privBytes,{name:'ECDSA',namedCurve:'P-256'},false,['sign']);
+  }
+  const kxPublicKey=await crypto.subtle.importKey('spki',b64ToBytes(stored.kxPub),{name:'ECDH',namedCurve:'P-256'},true,[]);
+  const kxPrivateKey=await crypto.subtle.importKey('pkcs8',b64ToBytes(stored.kxPriv),{name:'ECDH',namedCurve:'P-256'},false,['deriveBits','deriveKey']);
+  return {...stored,publicKey,privateKey,kxPublicKey,kxPrivateKey};
+}
+async function signObject(obj){
+  const bytes=enc.encode(stableStringify(obj));
+  const params=state.identity.alg==='Ed25519'?{name:'Ed25519'}:{name:'ECDSA',hash:'SHA-256'};
+  const sig=await crypto.subtle.sign(params,state.identity.privateKey,bytes);
+  return bytesToB64(sig);
+}
+async function verifySignedObject(obj,pubB64,alg,sigB64){
+  try{
+    const pubBytes=b64ToBytes(pubB64);
+    const key=alg==='Ed25519'
+      ? await crypto.subtle.importKey('spki',pubBytes,{name:'Ed25519'},true,['verify'])
+      : await crypto.subtle.importKey('spki',pubBytes,{name:'ECDSA',namedCurve:'P-256'},true,['verify']);
+    const params=alg==='Ed25519'?{name:'Ed25519'}:{name:'ECDSA',hash:'SHA-256'};
+    const ok=await crypto.subtle.verify(params,key,b64ToBytes(sigB64),enc.encode(stableStringify(obj)));
+    if(!ok)return null;
+    return await sha256Bytes(pubBytes);
+  }catch(_){return null}
+}
+async function initIdentity(){
+  let stored=null;
+  try{stored=JSON.parse(localStorage.getItem('oim.identity')||'null')}catch(_){}
+  if(!stored?.pub||!stored?.priv||!stored?.nodeId)stored=await generateIdentity();
+  try{state.identity=await importIdentity(stored);}
+  catch(_){stored=await generateIdentity();state.identity=await importIdentity(stored);}
+  state.nodeId=state.identity.nodeId;
+  $('#nodeId').value=state.nodeId;
+  $('#identityDot').className='status-dot good';
+  $('#identityText').textContent=`signed ${state.identity.alg} identity ready`;
+  state.primaryShard=parseInt(state.nodeId.slice(0,8),16)%CONFIG.shardCount;
+  $('#primaryShard').textContent=state.primaryShard;
+  updateOriginCode();
+}
+
+
+function loadPolicy(){
+  try{
+    const p=JSON.parse(localStorage.getItem('oim.policy')||'{}');
+    for(const k of ['advertise','share','accessMode','maxJobs','perPeerConcurrent','perPeerQueue','maxQueue','rpmLimit','tpmLimit','maxRemoteTokens','queueTimeoutSec','grantHours','grantModels','serveModels']){
+      if(p[k]!==undefined) state[k]=p[k];
+    }
+    const a=JSON.parse(localStorage.getItem('oim.allowlist')||'[]');
+    state.allowlist=new Set(Array.isArray(a)?a:[]);
+    const g=JSON.parse(localStorage.getItem('oim.grants')||'[]');
+    state.grants=new Map(Array.isArray(g)?g:[]);
+    const s=JSON.parse(localStorage.getItem('oim.strategies')||'["nostr","torrent","mqtt","ipfs"]');
+    state.enabledStrategies=new Set(Array.isArray(s)?s:['nostr','torrent','mqtt','ipfs']);
+  }catch(e){log('warn','Could not restore one or more persisted mesh settings.')}
+}
+function persistPolicy(){
+  localStorage.setItem('oim.policy',JSON.stringify({
+    advertise:state.advertise,share:state.share,accessMode:state.accessMode,
+    maxJobs:state.maxJobs,perPeerConcurrent:state.perPeerConcurrent,perPeerQueue:state.perPeerQueue,maxQueue:state.maxQueue,
+    rpmLimit:state.rpmLimit,tpmLimit:state.tpmLimit,maxRemoteTokens:state.maxRemoteTokens,
+    queueTimeoutSec:state.queueTimeoutSec,grantHours:state.grantHours,grantModels:state.grantModels,serveModels:state.serveModels
+  }));
+  localStorage.setItem('oim.allowlist',JSON.stringify([...state.allowlist]));
+  localStorage.setItem('oim.grants',JSON.stringify([...state.grants]));
+  localStorage.setItem('oim.strategies',JSON.stringify([...state.enabledStrategies]));
+}
+function syncPolicyUI(){
+  toggleButton($('#advertiseToggle'),state.advertise);
+  toggleButton($('#shareToggle'),state.share);
+  $('#accessMode').value=state.accessMode;
+  for(const [id,k] of [
+    ['maxJobs','maxJobs'],['perPeerConcurrent','perPeerConcurrent'],['perPeerQueue','perPeerQueue'],['maxQueue','maxQueue'],
+    ['rpmLimit','rpmLimit'],['tpmLimit','tpmLimit'],['maxRemoteTokens','maxRemoteTokens'],
+    ['queueTimeoutSec','queueTimeoutSec'],['grantHours','grantHours'],['grantModels','grantModels'],['serveModels','serveModels']
+  ]) $('#'+id).value=state[k];
+  $$('.strategyToggle').forEach(b=>b.classList.toggle('on',state.enabledStrategies.has(b.dataset.strategy)));
+  updateGrantSummary();
+}
+function updateGrantSummary(){
+  const el=$('#grantSummary');
+  if(el)el.textContent=`${state.grants.size} imported grant(s) · ${state.allowlist.size} allowlisted identit${state.allowlist.size===1?'y':'ies'}`;
+}
+async function identityProof(){
+  const body={v:1,node:state.nodeId,pub:state.identity.pub,alg:state.identity.alg,kxPub:state.identity.kxPub};
+  return {...body,sig:await signObject(body)};
+}
+async function verifyIdentityProof(proof){
+  if(!proof?.node||!proof?.pub||!proof?.alg||!proof?.kxPub||!proof?.sig)return false;
+  const {sig,...body}=proof;
+  const derived=await verifySignedObject(body,proof.pub,proof.alg,sig);
+  return derived===proof.node;
+}
+async function createCapabilityToken(subjectNode){
+  const models=String(state.grantModels||'*').split(',').map(x=>x.trim()).filter(Boolean);
+  const body={
+    v:1,typ:'oim-cap',jti:uuid(),iss:state.nodeId,sub:subjectNode,
+    scopes:['inference'],models:models.length?models:['*'],
+    iat:now(),exp:now()+Math.max(1,Number(state.grantHours)||24)*3600_000,
+    limits:{rpm:state.rpmLimit,tpm:state.tpmLimit,concurrent:state.perPeerConcurrent,max_tokens:state.maxRemoteTokens}
+  };
+  const tokenObj={body,pub:state.identity.pub,alg:state.identity.alg,sig:await signObject(body)};
+  return bytesToB64Url(enc.encode(JSON.stringify(tokenObj)));
+}
+async function inspectCapabilityToken(token){
+  try{
+    const obj=JSON.parse(new TextDecoder().decode(b64UrlToBytes(token.trim())));
+    if(!obj?.body||!obj?.sig||!obj?.pub||!obj?.alg)return null;
+    const derived=await verifySignedObject(obj.body,obj.pub,obj.alg,obj.sig);
+    if(!derived||derived!==obj.body.iss||obj.body.typ!=='oim-cap')return null;
+    return {...obj,derived};
+  }catch(_){return null}
+}
+async function validateCapabilityToken(token,requesterNode,model){
+  if(!token)return null;
+  const obj=await inspectCapabilityToken(token);
+  if(!obj||obj.body.iss!==state.nodeId)return null;
+  if(obj.body.exp<=now())return null;
+  if(obj.body.sub!=='*'&&obj.body.sub!==requesterNode)return null;
+  if(!Array.isArray(obj.body.scopes)||!obj.body.scopes.includes('inference'))return null;
+  const ms=Array.isArray(obj.body.models)?obj.body.models:['*'];
+  if(!ms.includes('*')&&!ms.includes(model))return null;
+  return obj.body;
+}
+
+function updateOriginCode(){
+  const origin = location.origin;
+  for(const id of ['code-ollama','code-llama','code-vllm']){
+    const el = $('#'+id);
+    if(el) el.textContent = el.textContent.replaceAll('ORIGIN_HERE', origin);
+  }
+}
+
+function setPill(id, mode, html){
+  const el=$(id); el.className='pill '+(mode||''); el.innerHTML=html;
+}
+
+async function checkPermissions(){
+  if(!window.isSecureContext){
+    $('#permDetail').textContent='not a secure context — host this file over HTTPS';
+    setPill('#lnaPill','bad','<strong>LAN</strong> HTTPS REQUIRED');
+    return;
+  }
+  if(!navigator.permissions?.query){
+    $('#permDetail').textContent='Permissions API unavailable; access will be tested directly';
+    setPill('#lnaPill','warn','<strong>LAN</strong> UNKNOWN');
+    return;
+  }
+  const parts=[];
+  let strongest='good';
+  for(const name of ['loopback-network','local-network']){
+    try{
+      const p=await navigator.permissions.query({name});
+      parts.push(`${name}: ${p.state}`);
+      if(p.state==='denied') strongest='bad';
+      else if(p.state==='prompt' && strongest!=='bad') strongest='warn';
+      p.onchange=checkPermissions;
+    }catch(e){
+      parts.push(`${name}: unsupported`);
+      if(strongest==='good') strongest='warn';
+    }
+  }
+  $('#permDetail').textContent=parts.join(' · ');
+  setPill('#lnaPill', strongest, `<strong>LAN</strong> ${esc(parts.join(' / '))}`);
+}
+
+async function requestLanPermission(){
+  if(!window.isSecureContext){
+    log('err','Local Network Access requires HTTPS.');
+    return;
+  }
+  log('info','Requesting local-network permission with a benign connection attempt…');
+  // Chromium's LNA prompt is request-triggered, not a navigator.permissions.request() API.
+  // This intentionally targets a highly unlikely private endpoint and ignores network failure.
+  const ctrl=new AbortController();
+  const timer=setTimeout(()=>ctrl.abort(),2500);
+  try{
+    await fetch('http://10.255.255.254:65535/__oim_permission_probe__',{
+      mode:'no-cors',
+      cache:'no-store',
+      signal:ctrl.signal,
+      targetAddressSpace:'local'
+    });
+  }catch(_){}
+  clearTimeout(timer);
+  await checkPermissions();
+  log('ok','Permission request completed; now add/scan your actual inference endpoint.');
+}
+
+function normalizeBaseUrl(raw){
+  let s=raw.trim();
+  if(!s) return '';
+  if(!/^https?:\/\//i.test(s)) s='http://'+s;
+  return s.replace(/\/+$/,'');
+}
+
+function addressSpaceFor(url){
+  try{
+    const h=new URL(url).hostname.toLowerCase();
+    if(h==='localhost'||h==='::1'||/^127\./.test(h)) return 'loopback';
+    if(/^10\./.test(h)||/^192\.168\./.test(h)||/^172\.(1[6-9]|2\d|3[01])\./.test(h)||h.endsWith('.local')) return 'local';
+  }catch(_){}
+  return undefined;
+}
+
+function fetchOptsFor(url, extra={}){
+  const targetAddressSpace=addressSpaceFor(url);
+  return targetAddressSpace ? {...extra,targetAddressSpace} : extra;
+}
+
+async function fetchTimeout(url, opts={}, timeout=4500){
+  const ctrl=new AbortController();
+  const t=setTimeout(()=>ctrl.abort(),timeout);
+  try{
+    return await fetch(url,{...opts,signal:ctrl.signal});
+  }finally{clearTimeout(t)}
+}
+
+async function probeEndpoint(url, label='manual', apiKey=''){
+  url=normalizeBaseUrl(url);
+  if(!url) return null;
+  const existing=state.endpoints.get(url);
+  state.endpoints.set(url,{...(existing||{}),url,label,status:'probing',models:existing?.models||[],lastSeen:now(),apiKey});
+  renderEndpoints();
+
+  const headers={'Accept':'application/json'};
+  if(apiKey) headers['Authorization']=`Bearer ${apiKey}`;
+  let models=[], type='openai', latency=null, detail='';
+  const t0=performance.now();
+  try{
+    let res=await fetchTimeout(`${url}/v1/models`,fetchOptsFor(url,{headers,cache:'no-store'}),5000);
+    latency=Math.round(performance.now()-t0);
+    if(res.ok){
+      const data=await res.json();
+      models=(data.data||[]).map(x=>String(x.id||x.model||'')).filter(Boolean);
+      detail=`/v1/models ${res.status}`;
+    }else throw new Error(`HTTP ${res.status}`);
+  }catch(firstErr){
+    // Ollama native fallback.
+    try{
+      const t1=performance.now();
+      const res=await fetchTimeout(`${url}/api/tags`,fetchOptsFor(url,{headers:{'Accept':'application/json'},cache:'no-store'}),5000);
+      latency=Math.round(performance.now()-t1);
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data=await res.json();
+      models=(data.models||[]).map(x=>String(x.name||x.model||'')).filter(Boolean);
+      type='ollama';
+      detail=`/api/tags ${res.status}`;
+    }catch(secondErr){
+      state.endpoints.set(url,{url,label,status:'down',models:[],lastSeen:now(),apiKey,error:String(secondErr?.message||firstErr?.message||'unreachable')});
+      renderEndpoints(); refreshModelSelect(); updateStats();
+      return null;
+    }
+  }
+
+  const ep={url,label,status:'up',models,type,latency,lastSeen:now(),apiKey,detail};
+  state.endpoints.set(url,ep);
+  renderEndpoints(); refreshModelSelect(); updateStats();
+  log('ok',`Inference endpoint online: ${url} · ${models.length} model(s) · ${latency}ms`);
+  scheduleAnnounce();
+  return ep;
+}
+
+async function scanCommon(){
+  $('#scanBtn').disabled=true;
+  log('info','Scanning standard loopback inference ports…');
+  const custom=[...state.endpoints.values()].filter(x=>!CONFIG.commonEndpoints.some(([,u])=>u===x.url)).map(x=>[x.label||'custom',x.url]);
+  const all=[...CONFIG.commonEndpoints,...custom];
+  await Promise.allSettled(all.map(([name,url])=>probeEndpoint(url,name,state.endpoints.get(url)?.apiKey||'')));
+  $('#scanBtn').disabled=false;
+  const up=[...state.endpoints.values()].filter(x=>x.status==='up').length;
+  log(up?'ok':'warn',`${up} inference endpoint(s) reachable.`);
+}
+
+function removeEndpoint(url){
+  state.endpoints.delete(url);
+  renderEndpoints(); refreshModelSelect(); updateStats(); scheduleAnnounce();
+}
+
+function renderEndpoints(){
+  const box=$('#endpointList'); box.innerHTML='';
+  const eps=[...state.endpoints.values()].sort((a,b)=>(a.status==='up'?-1:1)-(b.status==='up'?-1:1));
+  if(!eps.length){box.innerHTML='<div class="empty">No endpoints yet. Scan localhost or add a LAN URL.</div>';return}
+  for(const ep of eps){
+    const div=document.createElement('div'); div.className='endpoint';
+    const dot=ep.status==='up'?'good':ep.status==='probing'?'warn':'bad';
+    div.innerHTML=`
+      <div class="endpoint-head">
+        <div style="min-width:0">
+          <div class="endpoint-name"><span class="status-dot ${dot}"></span> ${esc(ep.label||'endpoint')}</div>
+          <div class="endpoint-url">${esc(ep.url)}</div>
+        </div>
+        <div class="row">
+          <button class="btn small reprobe">probe</button>
+          <button class="btn small remove">×</button>
+        </div>
+      </div>
+      <div class="tags">
+        ${ep.status==='up'?`<span class="tag good">${esc(ep.latency)}ms</span>`:''}
+        ${(ep.models||[]).slice(0,5).map(m=>`<span class="tag">${esc(m)}</span>`).join('')}
+        ${(ep.models||[]).length>5?`<span class="tag">+${ep.models.length-5}</span>`:''}
+        ${ep.status==='down'?`<span class="tag warn">${esc(ep.error||'unreachable')}</span>`:''}
+      </div>`;
+    div.querySelector('.reprobe').onclick=()=>probeEndpoint(ep.url,ep.label,ep.apiKey||'');
+    div.querySelector('.remove').onclick=()=>removeEndpoint(ep.url);
+    box.append(div);
+  }
+}
+
+function localModels(){
+  const out=[];
+  for(const ep of state.endpoints.values()){
+    if(ep.status!=='up') continue;
+    for(const m of ep.models||[]) out.push({model:m,source:'local',endpoint:ep.url,label:ep.label});
+  }
+  return out;
+}
+
+function remoteModels(){
+  const out=[],seen=new Set();
+  for(const p of state.peers.values()){
+    if(!p.online||!p.verified||!p.share||!p.node)continue;
+    for(const m of p.models||[]){
+      const k=`${p.node}|${m}`;if(seen.has(k))continue;seen.add(k);
+      const routes=[...(state.nodeRoutes.get(p.node)||[])].filter(id=>state.peers.get(id)?.online);
+      out.push({model:m,source:'mesh',providerNode:p.node,peerId:routes[0]||p.id,label:p.label||p.node.slice(0,8),load:p.load||0,queue:p.queue||0,routes:routes.length});
+    }
+  }
+  return out;
+}
+
+function refreshModelSelect(){
+  const sel=$('#modelSelect');
+  const prior=sel.value;
+  const local=localModels(), remote=remoteModels();
+  const groups=[];
+  if(local.length) groups.push(['LOCAL',local]);
+  if(remote.length) groups.push(['MESH',remote]);
+  sel.innerHTML='';
+  if(!local.length&&!remote.length){
+    const o=document.createElement('option');o.value='';o.textContent='No model discovered';sel.append(o);
+  } else {
+    for(const [name,items] of groups){
+      const g=document.createElement('optgroup');g.label=name;
+      const seen=new Set();
+      for(const x of items){
+        const key=`${x.source}|${x.model}|${x.peerId||x.endpoint}`;
+        if(seen.has(key))continue; seen.add(key);
+        const o=document.createElement('option');
+        o.value=JSON.stringify(x);
+        o.textContent=`${x.model} — ${x.source==='local'?(x.label||'local'):`${(x.label||'peer')} load ${x.load||0} q${x.queue||0} r${x.routes||1}`}`;
+        g.append(o);
+      }
+      sel.append(g);
+    }
+    if([...sel.options].some(o=>o.value===prior)) sel.value=prior;
+  }
+  updateStats();
+}
+
+async function importModuleWithFallback(pkg){
+  const v=CONFIG.trysteroVersion;
+  const urls=[
+    `https://esm.sh/${pkg}@${v}?bundle`,
+    `https://cdn.jsdelivr.net/npm/${pkg}@${v}/+esm`,
+    `https://esm.run/${pkg}@${v}`
+  ];
+  let last;
+  for(const u of urls){
+    try{
+      const mod=await import(u);
+      if(!mod.joinRoom)throw new Error('joinRoom export missing');
+      return mod;
+    }catch(e){last=e}
+  }
+  throw last||new Error(`unable to import ${pkg}`);
+}
+async function loadStrategy(name){
+  if(state.strategyModules.has(name))return state.strategyModules.get(name);
+  const pkg=CONFIG.strategyPackages[name];
+  if(!pkg)throw new Error(`unknown discovery strategy ${name}`);
+  setStrategyStatus(name,'loading','loading module');
+  try{
+    const mod=await importModuleWithFallback(pkg);
+    state.strategyModules.set(name,mod);
+    setStrategyStatus(name,'ready','module ready');
+    log('ok',`${CONFIG.strategyLabels[name]} discovery module loaded.`);
+    return mod;
+  }catch(e){
+    setStrategyStatus(name,'error',e.message);
+    throw e;
+  }
+}
+function setStrategyStatus(name,status,detail=''){
+  const old=state.strategyStatus.get(name)||{};
+  state.strategyStatus.set(name,{...old,status,detail,ts:now()});
+  renderRouterState();
+  const b=$(`.strategyToggle[data-strategy="${name}"]`);
+  if(b){
+    b.classList.remove('loading','err');
+    if(status==='loading')b.classList.add('loading');
+    if(status==='error')b.classList.add('err');
+  }
+}
+function strategyRoomKey(strategy,logical){return `${strategy}:${logical}`}
+function roomName(kind, shard){
+  const ns=($('#namespaceInput').value.trim()||CONFIG.defaultNamespace).replace(/[^a-zA-Z0-9_.:-]/g,'-').slice(0,80);
+  if($('#discoveryMode').value==='single') return `${ns}:global`;
+  return `${ns}:${kind}:${String(shard).padStart(2,'0')}`;
+}
+function parseTurnConfig(){
+  const raw=$('#turnConfig')?.value.trim();
+  if(!raw)return null;
+  try{
+    const v=JSON.parse(raw);
+    if(!Array.isArray(v))throw new Error('TURN config must be an array');
+    return v;
+  }catch(e){
+    log('warn',`TURN JSON ignored: ${e.message}`);return null;
+  }
+}
+function parseWsRelayUrls(){
+  return ($('#wsRelayUrls')?.value||'').split(/[\s,]+/).map(x=>x.trim()).filter(x=>/^wss:\/\//i.test(x));
+}
+async function joinOneRoom(strategy,logical,kind,shard){
+  const fullKey=strategyRoomKey(strategy,logical);
+  if(state.rooms.has(fullKey))return state.rooms.get(fullKey);
+  const mod=await loadStrategy(strategy);
+  const rName=roomName(kind,shard);
+  const cfg={appId:CONFIG.appId};
+  const turn=parseTurnConfig();
+  if(turn?.length)cfg.turnConfig=turn;
+  if(strategy==='nostr'||strategy==='mqtt'||strategy==='torrent'){
+    cfg.relayConfig={redundancy:strategy==='nostr'?9:strategy==='mqtt'?5:4,warnOnRelayFailure:false};
+  }else if(strategy==='wsrelay'){
+    const urls=parseWsRelayUrls();
+    if(!urls.length)throw new Error('no custom WebSocket relay URLs configured');
+    cfg.relayConfig={urls,warnOnRelayFailure:false};
+  }
+  cfg.trickleIce=!(strategy==='torrent'||strategy==='ipfs');
+
+  let room;
+  try{
+    room=mod.joinRoom(cfg,rName,{
+      handshakeTimeoutMs:14000,
+      onJoinError:d=>{
+        setStrategyStatus(strategy,'degraded',d?.error?.message||'peer ICE failure');
+        log('warn',`${CONFIG.strategyLabels[strategy]} peer join issue ${d?.peerId?.slice?.(0,8)||''}: ${d?.error?.message||d?.error||'unknown'}`);
+      }
+    });
+  }catch(e){
+    setStrategyStatus(strategy,'error',e.message);throw e;
+  }
+
+  const actions={
+    hello:room.makeAction('oim-hello'),
+    infer:room.makeAction('oim-infer'),
+    result:room.makeAction('oim-result'),
+    state:room.makeAction('oim-state'),
+    grant:room.makeAction('oim-grant'),
+    ping:room.makeAction('oim-ping')
+  };
+  const wrapper={room,actions,key:fullKey,logical,strategy,kind,shard,name:rName,peers:new Set()};
+  state.rooms.set(fullKey,wrapper);
+  setStrategyStatus(strategy,'online',`${[...state.rooms.values()].filter(w=>w.strategy===strategy).length} room(s)`);
+
+  room.onPeerJoin=peerId=>{
+    wrapper.peers.add(peerId);
+    upsertPeer(peerId,{online:true,lastSeen:now(),strategy,rooms:new Set([fullKey])});
+    log('ok',`Peer route ${peerId.slice(0,10)} via ${CONFIG.strategyLabels[strategy]} ${kind}/${shard}`);
+    sendHello(wrapper,peerId);
+    renderPeers();drawTopology();refreshModelSelect();
+  };
+  room.onPeerLeave=peerId=>{
+    wrapper.peers.delete(peerId);
+    const still=[...state.rooms.values()].some(w=>w.peers.has(peerId));
+    const p=state.peers.get(peerId);
+    if(p){p.online=still;p.lastSeen=now();state.peers.set(peerId,p)}
+    pruneNodeRoutes();
+    renderPeers();drawTopology();refreshModelSelect();
+  };
+
+  actions.hello.onMessage=(data,meta)=>handleHello(data,meta,wrapper);
+  actions.infer.onMessage=(data,meta)=>handleRemoteInference(data,meta,wrapper);
+  actions.result.onMessage=(data,meta)=>handleInferenceResult(data,meta,wrapper);
+  actions.state.onMessage=(data,meta)=>handleRemoteState(data,meta,wrapper);
+  actions.grant.onMessage=(data,meta)=>handleIncomingGrant(data,meta,wrapper);
+  actions.ping.onMessage=(data,meta)=>{
+    upsertPeer(meta.peerId,{lastSeen:now(),online:true});
+    if(data?.echo)actions.ping.send({nonce:data.nonce,reply:true,ts:now()},{target:meta.peerId}).catch(()=>{});
+  };
+
+  log('info',`Joined ${CONFIG.strategyLabels[strategy]} discovery room ${rName}`);
+  return wrapper;
+}
+function leaveOneRoom(fullKey){
+  const w=state.rooms.get(fullKey);if(!w)return;
+  try{w.room.leave()}catch(_){}
+  state.rooms.delete(fullKey);
+  setStrategyStatus(w.strategy,state.enabledStrategies.has(w.strategy)?'ready':'off','room closed');
+}
+async function joinStrategy(strategy){
+  if(!state.enabledStrategies.has(strategy))return false;
+  if(strategy==='wsrelay'&&!parseWsRelayUrls().length){
+    setStrategyStatus(strategy,'off','no relay URLs');return false;
+  }
+  try{
+    if($('#discoveryMode').value==='single'){
+      await joinOneRoom(strategy,'global','global',0);
+    }else{
+      await joinOneRoom(strategy,'home','home',state.primaryShard);
+      await joinOneRoom(strategy,'explore','explore',state.exploreShard);
+    }
+    return true;
+  }catch(e){
+    log('warn',`${CONFIG.strategyLabels[strategy]} discovery unavailable: ${e.message}`);
+    return false;
+  }
+}
+async function joinMesh(){
+  if(state.joined)return;
+  $('#joinBtn').disabled=true;
+  state.joined=true;
+  try{
+    if($('#discoveryMode').value==='sharded'){
+      const epoch=Math.floor(now()/CONFIG.exploreIntervalMs);
+      const h=await sha256(`${state.nodeId}:${epoch}`);
+      state.exploreShard=parseInt(h.slice(0,8),16)%CONFIG.shardCount;
+      if(state.exploreShard===state.primaryShard)state.exploreShard=(state.exploreShard+1)%CONFIG.shardCount;
+      $('#exploreShard').textContent=state.exploreShard;
+    }else state.exploreShard=0;
+
+    const results=await Promise.allSettled([...state.enabledStrategies].map(joinStrategy));
+    const online=[...state.strategyStatus.values()].filter(x=>x.status==='online').length;
+    if(!online)throw new Error('no discovery substrate could be started');
+
+    if($('#discoveryMode').value==='sharded')state.exploreTimer=setInterval(()=>rotateExploreRooms(),CONFIG.exploreIntervalMs);
+    state.heartbeatTimer=setInterval(()=>broadcastHello(),CONFIG.heartbeatMs);
+    state.cleanupTimer=setInterval(cleanupPeers,10000);
+    $('#joinBtn').textContent='leave mesh';
+    $('#joinBtn').classList.remove('primary');$('#joinBtn').classList.add('bad');
+    setPill('#meshPill','good',`<strong>MESH</strong> ${online} PLANE${online===1?'':'S'}`);
+    broadcastHello();
+    log('ok',`Mesh online across ${online} independent discovery plane(s).`);
+  }catch(e){
+    state.joined=false;
+    for(const key of [...state.rooms.keys()])leaveOneRoom(key);
+    setPill('#meshPill','bad','<strong>MESH</strong> ERROR');
+    log('err',`Mesh startup failed: ${e.message}`);
+  }finally{$('#joinBtn').disabled=false;updateStats();drawTopology();renderRouterState()}
+}
+function leaveMesh(){
+  for(const key of [...state.rooms.keys()])leaveOneRoom(key);
+  clearInterval(state.exploreTimer);clearInterval(state.heartbeatTimer);clearInterval(state.cleanupTimer);
+  state.exploreTimer=state.heartbeatTimer=state.cleanupTimer=null;
+  state.joined=false;
+  for(const p of state.peers.values())p.online=false;
+  $('#joinBtn').textContent='join mesh';
+  $('#joinBtn').classList.add('primary');$('#joinBtn').classList.remove('bad');
+  setPill('#meshPill','warn','<strong>MESH</strong> OFFLINE');
+  log('info','Left public mesh; local inference remains available.');
+  renderPeers();refreshModelSelect();updateStats();drawTopology();renderRouterState();
+}
+async function rotateExploreRooms(){
+  if($('#discoveryMode').value!=='sharded'||!state.joined)return;
+  const epoch=Math.floor(now()/CONFIG.exploreIntervalMs);
+  const h=await sha256(`${state.nodeId}:${epoch}`);
+  let next=parseInt(h.slice(0,8),16)%CONFIG.shardCount;
+  if(next===state.primaryShard)next=(next+1)%CONFIG.shardCount;
+  if(next===state.exploreShard)return;
+  state.exploreShard=next;$('#exploreShard').textContent=next;
+  for(const strategy of [...state.enabledStrategies]){
+    const key=strategyRoomKey(strategy,'explore');
+    if(state.rooms.has(key))leaveOneRoom(key);
+    joinOneRoom(strategy,'explore','explore',next).catch(e=>setStrategyStatus(strategy,'degraded',e.message));
+  }
+  log('info',`Rotated exploration shard to ${next} across active discovery planes.`);
+}
+function pruneNodeRoutes(){
+  for(const [node,routes] of state.nodeRoutes){
+    for(const id of [...routes]){
+      const p=state.peers.get(id);
+      if(!p?.online||p.node!==node)routes.delete(id);
+    }
+    if(!routes.size)state.nodeRoutes.delete(node);
+  }
+}
+
+
+function manualRtcConfig(){
+  const iceServers=[
+    {urls:['stun:stun.cloudflare.com:3478','stun:stun.l.google.com:19302','stun:stun1.l.google.com:19302']}
+  ];
+  const extra=parseTurnConfig();
+  if(extra?.length)iceServers.push(...extra);
+  return {iceServers,iceCandidatePoolSize:4};
+}
+function encodeManualSignal(obj){
+  return bytesToB64Url(enc.encode(JSON.stringify(obj)));
+}
+function decodeManualSignal(token){
+  try{return JSON.parse(new TextDecoder().decode(b64UrlToBytes(token.trim())))}catch(_){return null}
+}
+function waitIceGathering(pc,timeoutMs=7000){
+  if(pc.iceGatheringState==='complete')return Promise.resolve();
+  return new Promise(resolve=>{
+    let done=false;
+    const finish=()=>{if(done)return;done=true;pc.removeEventListener('icegatheringstatechange',onChange);clearTimeout(t);resolve()};
+    const onChange=()=>{if(pc.iceGatheringState==='complete')finish()};
+    const t=setTimeout(finish,timeoutMs);
+    pc.addEventListener('icegatheringstatechange',onChange);
+  });
+}
+function makeManualAction(wrapper,name){
+  const action={onMessage:null};
+  action.send=async(data)=>{
+    if(wrapper.dc.readyState!=='open')throw new Error('manual WebRTC route is not open');
+    wrapper.dc.send(JSON.stringify({v:1,a:name,d:data}));
+  };
+  return action;
+}
+function setupManualRoute(pc,dc,role='manual'){
+  const routeId=`manual-${++state.manualRouteSeq}-${uuid().slice(0,8)}`;
+  const key=`manual:${routeId}`;
+  const wrapper={
+    room:{leave:()=>{try{dc.close()}catch(_){}try{pc.close()}catch(_){}}},
+    dc,pc,key,logical:routeId,strategy:'manual',kind:'manual',shard:-1,name:'manual-rendezvous',
+    peers:new Set(),actions:{}
+  };
+  for(const name of ['hello','infer','result','state','grant','ping'])wrapper.actions[name]=makeManualAction(wrapper,name);
+  state.rooms.set(key,wrapper);
+
+  wrapper.actions.hello.onMessage=(data,meta)=>handleHello(data,meta,wrapper);
+  wrapper.actions.infer.onMessage=(data,meta)=>handleRemoteInference(data,meta,wrapper);
+  wrapper.actions.result.onMessage=(data,meta)=>handleInferenceResult(data,meta,wrapper);
+  wrapper.actions.state.onMessage=(data,meta)=>handleRemoteState(data,meta,wrapper);
+  wrapper.actions.grant.onMessage=(data,meta)=>handleIncomingGrant(data,meta,wrapper);
+  wrapper.actions.ping.onMessage=(data,meta)=>{
+    upsertPeer(meta.peerId,{lastSeen:now(),online:true});
+    if(data?.echo)wrapper.actions.ping.send({nonce:data.nonce,reply:true,ts:now()}).catch(()=>{});
+  };
+
+  dc.onmessage=e=>{
+    try{
+      const msg=JSON.parse(String(e.data));
+      if(msg?.v!==1||!msg?.a)return;
+      const a=wrapper.actions[msg.a];
+      if(a?.onMessage)a.onMessage(msg.d,{peerId:routeId});
+    }catch(_){}
+  };
+  dc.onopen=()=>{
+    wrapper.peers.add(routeId);
+    upsertPeer(routeId,{online:true,lastSeen:now(),strategy:'manual',rooms:new Set([key])});
+    setStrategyStatus('manual','online','direct rendezvous');
+    log('ok',`Manual WebRTC route ${routeId.slice(0,18)} connected.`);
+    sendHello(wrapper,routeId);renderPeers();refreshModelSelect();updateStats();renderStatePanel();
+  };
+  const onClose=()=>{
+    wrapper.peers.delete(routeId);
+    const p=state.peers.get(routeId);if(p){p.online=false;p.lastSeen=now()}
+    pruneNodeRoutes();state.rooms.delete(key);
+    setStrategyStatus('manual','off','no direct rendezvous');
+    renderPeers();refreshModelSelect();updateStats();renderStatePanel();
+  };
+  dc.onclose=onClose;pc.onconnectionstatechange=()=>{
+    if(['failed','closed','disconnected'].includes(pc.connectionState))onClose();
+  };
+  return wrapper;
+}
+async function createManualOffer(){
+  if(state.manualPending?.pc){try{state.manualPending.pc.close()}catch(_){}state.manualPending=null}
+  const pc=new RTCPeerConnection(manualRtcConfig());
+  const dc=pc.createDataChannel('oim-v2',{ordered:true});
+  const wrapper=setupManualRoute(pc,dc,'offer');
+  const offer=await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  await waitIceGathering(pc);
+  state.manualPending={pc,dc,wrapper,role:'offer'};
+  const token=encodeManualSignal({v:1,type:'offer',sdp:pc.localDescription?.sdp,ts:now()});
+  $('#manualSignal').value=token;
+  try{await navigator.clipboard.writeText(token)}catch(_){}
+  log('ok','Manual rendezvous offer created and copied. Send it to the intended peer, paste their answer here, then click ACCEPT ANSWER.');
+}
+async function answerManualOffer(){
+  const sig=decodeManualSignal($('#manualSignal').value);
+  if(sig?.type!=='offer'||!sig.sdp)throw new Error('paste a valid manual offer token first');
+  const pc=new RTCPeerConnection(manualRtcConfig());
+  pc.ondatachannel=e=>setupManualRoute(pc,e.channel,'answer');
+  await pc.setRemoteDescription({type:'offer',sdp:sig.sdp});
+  const ans=await pc.createAnswer();
+  await pc.setLocalDescription(ans);
+  await waitIceGathering(pc);
+  const token=encodeManualSignal({v:1,type:'answer',sdp:pc.localDescription?.sdp,ts:now()});
+  $('#manualSignal').value=token;
+  try{await navigator.clipboard.writeText(token)}catch(_){}
+  log('ok','Manual rendezvous answer created and copied. Return it to the offer creator.');
+}
+async function acceptManualAnswer(){
+  const sig=decodeManualSignal($('#manualSignal').value);
+  if(sig?.type!=='answer'||!sig.sdp)throw new Error('paste a valid manual answer token first');
+  if(!state.manualPending?.pc)throw new Error('this browser has no pending manual offer');
+  await state.manualPending.pc.setRemoteDescription({type:'answer',sdp:sig.sdp});
+  log('info','Manual answer accepted; waiting for ICE/WebRTC route to open.');
+}
+
+async function getCapabilities(){
+  const lm=localModels();
+  const unique=[...new Set(lm.map(x=>x.model).filter(m=>!state.share||isModelServed(m)))].slice(0,64);
+  const proof=await identityProof();
+  const body={
+    v:2,
+    ...proof,
+    label:`web-${state.nodeId.slice(0,6)}`,
+    ts:now(),
+    advertise:state.advertise,
+    share:state.share,
+    accessMode:state.accessMode,
+    models:state.advertise?unique:[],
+    endpoints:lm.length,
+    queue:state.remoteQueue.length,
+    maxQueue:state.maxQueue,
+    load:state.activeRemoteJobs,
+    capacity:state.maxJobs,
+    rpm:state.rpmLimit,
+    tpm:state.tpmLimit,
+    maxTokens:state.maxRemoteTokens,
+    strategies:[...new Set([...state.rooms.values()].map(w=>w.strategy))],
+    agent:navigator.userAgentData?.platform||navigator.platform||'browser'
+  };
+  // identityProof already contains a binding signature; sign the changing advertisement separately.
+  const adBody={...body}; delete adBody.sig;
+  return {...body,adSig:await signObject(adBody)};
+}
+async function sendHello(wrapper,target=null){
+  try{await wrapper.actions.hello.send(await getCapabilities(),target?{target}:undefined)}catch(_){}
+}
+function broadcastHello(){
+  if(!state.joined)return;
+  for(const w of state.rooms.values())sendHello(w);
+}
+let announceDebounce;
+function scheduleAnnounce(){
+  clearTimeout(announceDebounce);
+  announceDebounce=setTimeout(()=>{broadcastHello();renderStatePanel()},180);
+}
+function upsertPeer(peerId,patch={}){
+  const old=state.peers.get(peerId)||{
+    id:peerId,online:true,lastSeen:now(),models:[],share:false,advertise:false,
+    load:0,capacity:0,queue:0,maxQueue:0,rooms:new Set(),latency:null,verified:false
+  };
+  const merged={...old,...patch};
+  if(patch.rooms){
+    const r=new Set(old.rooms||[]);
+    for(const x of patch.rooms)r.add(x);
+    merged.rooms=r;
+  }
+  state.peers.set(peerId,merged);
+  if(merged.verified&&merged.node){
+    const routes=state.nodeRoutes.get(merged.node)||new Set();
+    routes.add(peerId);state.nodeRoutes.set(merged.node,routes);
+  }
+  return merged;
+}
+async function handleHello(data,meta,wrapper){
+  if(!data||typeof data!=='object'||!data.sig||!data.pub||!data.alg||!data.kxPub)return;
+  const peerId=meta.peerId;
+  const proof={v:data.v>=2?1:data.v,node:data.node,pub:data.pub,alg:data.alg,kxPub:data.kxPub,sig:data.sig};
+  if(!(await verifyIdentityProof(proof))){
+    log('warn',`Rejected unverifiable identity from route ${peerId.slice(0,10)}.`);
+    upsertPeer(peerId,{online:true,lastSeen:now(),verified:false,share:false,models:[],strategy:wrapper.strategy,rooms:new Set([wrapper.key])});
+    return;
+  }
+  if(data.adSig){
+    const {adSig,...adBody}=data;
+    delete adBody.sig;
+    if(!(await verifySignedObject(adBody,data.pub,data.alg,adSig))){
+      log('warn',`Rejected tampered capability advertisement from ${data.node.slice(0,10)}.`);
+      return;
+    }
+  }
+  const models=Array.isArray(data.models)?data.models.filter(x=>typeof x==='string').slice(0,64):[];
+  upsertPeer(peerId,{
+    online:true,lastSeen:now(),verified:true,node:data.node,pub:data.pub,alg:data.alg,kxPub:data.kxPub,
+    label:data.label||data.node.slice(0,8),models,share:!!data.share,advertise:!!data.advertise,
+    accessMode:String(data.accessMode||'unknown'),load:Number(data.load)||0,capacity:Number(data.capacity)||0,
+    queue:Number(data.queue)||0,maxQueue:Number(data.maxQueue)||0,rpm:Number(data.rpm)||0,tpm:Number(data.tpm)||0,
+    maxTokens:Number(data.maxTokens)||0,strategies:Array.isArray(data.strategies)?data.strategies:[],
+    strategy:wrapper.strategy,agent:String(data.agent||'browser').slice(0,80),rooms:new Set([wrapper.key])
+  });
+  renderPeers();refreshModelSelect();updateStats();drawTopology();renderStatePanel();
+}
+
+function estimateJobTokens(prompt,maxTokens){
+  return Math.ceil(String(prompt||'').length/4)+Math.max(1,Number(maxTokens)||0);
+}
+function cleanUsage(node){
+  const cutoff=now()-60_000;
+  const arr=(state.usage.get(node)||[]).filter(x=>x.ts>cutoff);
+  state.usage.set(node,arr);return arr;
+}
+function usageTotals(node){
+  const arr=cleanUsage(node);
+  return {rpm:arr.length,tpm:arr.reduce((a,x)=>a+x.tokens,0)};
+}
+function activeForNode(node){return state.activeByNode.get(node)||0}
+function scopedModelList(spec){
+  return String(spec||'*').split(',').map(x=>x.trim()).filter(Boolean);
+}
+function isModelServed(model){
+  const ms=scopedModelList(state.serveModels);
+  return ms.includes('*')||ms.includes(model);
+}
+function findShareableLocalModel(name){
+  if(!isModelServed(name))return null;
+  return findLocalModel(name);
+}
+function queuedForNode(node){
+  return state.remoteQueue.filter(j=>state.peers.get(j.peerId)?.node===node).length;
+}
+function ingressAllowed(peerId){
+  const cutoff=now()-60_000;
+  const arr=(state.ingressUsage.get(peerId)||[]).filter(t=>t>cutoff);
+  if(arr.length>=90)return false;
+  arr.push(now());state.ingressUsage.set(peerId,arr);return true;
+}
+
+async function authorizeRemoteJob(peerMeta,data){
+  if(!peerMeta?.verified||!peerMeta.node)return {ok:false,error:'peer identity not verified'};
+  if(!state.share)return {ok:false,error:'peer inference sharing disabled'};
+  const prompt=String(data.prompt||'');
+  if(!prompt||prompt.length>48000)return {ok:false,error:'prompt invalid or too large'};
+  const match=findShareableLocalModel(data.model);
+  if(!match)return {ok:false,error:'requested model unavailable or outside provider model scope'};
+  const requestedMax=clamp(Number(data.max_tokens)||CONFIG.defaultMaxTokens,1,state.maxRemoteTokens);
+  const estTokens=estimateJobTokens(prompt,requestedMax);
+
+  let grant=null;
+  if(data.grant)grant=await validateCapabilityToken(data.grant,peerMeta.node,match.model);
+  if(state.accessMode==='capability'&&!grant)return {ok:false,error:'valid capability grant required'};
+  if(state.accessMode==='allowlist'&&!state.allowlist.has(peerMeta.node)&&!grant)return {ok:false,error:'identity not allowlisted and no valid grant supplied'};
+
+  const grantLimits=grant?.limits||{};
+  const rpm=Math.max(1,Math.min(state.rpmLimit,Number(grantLimits.rpm)||state.rpmLimit));
+  const tpm=Math.max(256,Math.min(state.tpmLimit,Number(grantLimits.tpm)||state.tpmLimit));
+  const concurrent=Math.max(1,Math.min(state.perPeerConcurrent,Number(grantLimits.concurrent)||state.perPeerConcurrent));
+  const tokenMax=Math.max(1,Math.min(state.maxRemoteTokens,Number(grantLimits.max_tokens)||state.maxRemoteTokens));
+  const finalMax=Math.min(requestedMax,tokenMax);
+  const finalEst=estimateJobTokens(prompt,finalMax);
+  const u=usageTotals(peerMeta.node);
+  if(u.rpm>=rpm)return {ok:false,error:`rate limit: ${rpm} requests/min`,retryAfterMs:60_000-(now()-(cleanUsage(peerMeta.node)[0]?.ts||now()))};
+  if(u.tpm+finalEst>tpm)return {ok:false,error:`rate limit: ${tpm} estimated tokens/min`,retryAfterMs:60_000-(now()-(cleanUsage(peerMeta.node)[0]?.ts||now()))};
+  if(activeForNode(peerMeta.node)>=concurrent)return {ok:false,error:`per-peer concurrency limit ${concurrent}`,queueable:true};
+  return {ok:true,match,prompt,maxTokens:finalMax,estTokens:finalEst,grant,concurrent};
+}
+function sendJobState(wrapper,peerId,id,status,extra={}){
+  wrapper.actions.state.send({
+    id,status,ts:now(),node:state.nodeId,
+    active:state.activeRemoteJobs,capacity:state.maxJobs,
+    queued:state.remoteQueue.length,maxQueue:state.maxQueue,...extra
+  },{target:peerId}).catch(()=>{});
+}
+function enqueueRemoteJob(job){
+  if(state.remoteQueue.length>=state.maxQueue)return false;
+  const node=state.peers.get(job.peerId)?.node;
+  if(node&&queuedForNode(node)>=state.perPeerQueue)return false;
+  job.enqueued=now();
+  state.remoteQueue.push(job);
+  sendJobState(job.wrapper,job.peerId,job.data.id,'queued',{position:state.remoteQueue.length});
+  renderStatePanel();scheduleAnnounce();return true;
+}
+async function processRemoteQueue(){
+  // Remove stale/dead jobs first.
+  const timeout=Math.max(5,state.queueTimeoutSec)*1000;
+  const fresh=[];
+  for(const job of state.remoteQueue){
+    if(now()-job.enqueued>timeout){
+      sendJobState(job.wrapper,job.peerId,job.data.id,'expired');
+      job.wrapper.actions.result.send({id:job.data.id,ok:false,error:'queue timeout exceeded'},{target:job.peerId}).catch(()=>{});
+    }else fresh.push(job);
+  }
+  state.remoteQueue=fresh;
+  let progressed=true;
+  while(progressed&&state.activeRemoteJobs<state.maxJobs&&state.remoteQueue.length){
+    progressed=false;
+    for(let i=0;i<state.remoteQueue.length;i++){
+      const job=state.remoteQueue[i];
+      const peerMeta=state.peers.get(job.peerId);
+      if(!peerMeta?.online)continue;
+      const auth=await authorizeRemoteJob(peerMeta,job.data);
+      if(auth.ok){
+        state.remoteQueue.splice(i,1);
+        executeRemoteJob({...job,auth});
+        progressed=true;break;
+      }
+      // Concurrency-only failures stay queued; policy/rate failures are rejected.
+      if(!auth.queueable){
+        state.remoteQueue.splice(i,1);
+        sendJobState(job.wrapper,job.peerId,job.data.id,'rejected',{error:auth.error,retryAfterMs:auth.retryAfterMs||0});
+        job.wrapper.actions.result.send({id:job.data.id,ok:false,error:auth.error,retryAfterMs:auth.retryAfterMs||0},{target:job.peerId}).catch(()=>{});
+        progressed=true;break;
+      }
+    }
+  }
+  renderStatePanel();scheduleAnnounce();
+}
+async function executeRemoteJob(job){
+  const {peerId,wrapper,data,auth}=job;
+  const peerMeta=state.peers.get(peerId);
+  if(!peerMeta)return;
+  state.activeRemoteJobs++;
+  state.activeByNode.set(peerMeta.node,activeForNode(peerMeta.node)+1);
+  state.usage.set(peerMeta.node,[...cleanUsage(peerMeta.node),{ts:now(),tokens:auth.estTokens}]);
+  scheduleAnnounce();sendJobState(wrapper,peerId,data.id,'running');
+  log('info',`Serving ${data.id.slice(0,8)} for ${peerMeta.node.slice(0,10)} on ${auth.match.model}; ${state.remoteQueue.length} queued.`);
+  const t0=performance.now();
+  try{
+    const text=await callOpenAI(auth.match.endpoint,auth.match.model,[{role:'user',content:auth.prompt}],{
+      temperature:clamp(Number(data.temperature)||0.7,0,2),max_tokens:auth.maxTokens
+    });
+    await wrapper.actions.result.send({
+      id:data.id,ok:true,text,model:auth.match.model,node:state.nodeId,
+      latency_ms:Math.round(performance.now()-t0),queue_ms:Math.max(0,(job.started||now())-(job.enqueued||now()))
+    },{target:peerId});
+    sendJobState(wrapper,peerId,data.id,'complete');
+  }catch(e){
+    wrapper.actions.result.send({id:data.id,ok:false,error:String(e.message||e)},{target:peerId}).catch(()=>{});
+    sendJobState(wrapper,peerId,data.id,'failed',{error:String(e.message||e)});
+    log('err',`Mesh job failed: ${e.message}`);
+  }finally{
+    state.activeRemoteJobs--;
+    state.activeByNode.set(peerMeta.node,Math.max(0,activeForNode(peerMeta.node)-1));
+    scheduleAnnounce();setTimeout(processRemoteQueue,0);
+  }
+}
+async function handleRemoteInference(data,meta,wrapper){
+  const peerId=meta.peerId;
+  if(!data||typeof data!=='object'||!data.id)return;
+  if(!ingressAllowed(peerId)){
+    wrapper.actions.result.send({id:data.id,ok:false,error:'ingress flood limit exceeded'},{target:peerId}).catch(()=>{});return;
+  }
+  if(data.grant&&String(data.grant).length>12000){
+    wrapper.actions.result.send({id:data.id,ok:false,error:'capability token too large'},{target:peerId}).catch(()=>{});return;
+  }
+  if(state.seenJobs.has(data.id)){
+    wrapper.actions.result.send({id:data.id,ok:false,error:'duplicate job id'},{target:peerId}).catch(()=>{});return;
+  }
+  state.seenJobs.set(data.id,now());
+  const peerMeta=state.peers.get(peerId);
+  const auth=await authorizeRemoteJob(peerMeta,data);
+  if(!auth.ok){
+    if(auth.queueable&&state.maxQueue>0){
+      if(enqueueRemoteJob({peerId,wrapper,data,auth:null}))setTimeout(processRemoteQueue,0);
+      else{
+        sendJobState(wrapper,peerId,data.id,'rejected',{error:'queue full'});
+        wrapper.actions.result.send({id:data.id,ok:false,error:'queue full'},{target:peerId}).catch(()=>{});
+      }
+      return;
+    }
+    sendJobState(wrapper,peerId,data.id,'rejected',{error:auth.error,retryAfterMs:auth.retryAfterMs||0});
+    wrapper.actions.result.send({id:data.id,ok:false,error:auth.error,retryAfterMs:auth.retryAfterMs||0},{target:peerId}).catch(()=>{});
+    return;
+  }
+  if(state.activeRemoteJobs>=state.maxJobs){
+    if(state.maxQueue>0&&enqueueRemoteJob({peerId,wrapper,data,auth:null})){setTimeout(processRemoteQueue,0);return}
+    wrapper.actions.result.send({id:data.id,ok:false,error:'provider saturated; queue full/disabled'},{target:peerId}).catch(()=>{});return;
+  }
+  executeRemoteJob({peerId,wrapper,data,auth,enqueued:now(),started:now()});
+}
+function handleRemoteState(data,meta,wrapper){
+  if(!data?.id)return;
+  const p=state.pending.get(data.id);
+  if(p){
+    p.state=data;
+    if(data.status==='queued')log('info',`Remote job ${data.id.slice(0,8)} queued at position ${data.position||'?'}.`);
+    if(data.status==='running')log('info',`Remote job ${data.id.slice(0,8)} is running.`);
+  }
+  const peer=state.peers.get(meta.peerId);
+  if(peer){
+    peer.load=Number(data.active)||peer.load||0;
+    peer.capacity=Number(data.capacity)||peer.capacity||0;
+    peer.queue=Number(data.queued)||0;
+    peer.maxQueue=Number(data.maxQueue)||peer.maxQueue||0;
+  }
+  renderPeers();renderStatePanel();
+}
+async function handleIncomingGrant(data,meta){
+  const peer=state.peers.get(meta.peerId);
+  if(!peer?.verified||!data?.token)return;
+  const obj=await inspectCapabilityToken(data.token);
+  if(!obj||obj.body.iss!==peer.node||(obj.body.sub!=='*'&&obj.body.sub!==state.nodeId)||obj.body.exp<=now()){
+    log('warn',`Rejected invalid capability token from ${peer.node.slice(0,10)}.`);return;
+  }
+  state.grants.set(obj.body.iss,data.token);persistPolicy();updateGrantSummary();renderStatePanel();
+  log('ok',`Imported inference capability from ${peer.node.slice(0,10)} valid until ${new Date(obj.body.exp).toLocaleString()}.`);
+}
+async function sendGrantToPeer(peerId){
+  const p=state.peers.get(peerId);
+  if(!p?.verified||!p.node)throw new Error('peer identity is not verified');
+  const token=await createCapabilityToken(p.node);
+  const w=roomForPeer(peerId);
+  if(!w)throw new Error('peer route is no longer connected');
+  await w.actions.grant.send({token},{target:peerId});
+  log('ok',`Issued identity-bound inference capability to ${p.node.slice(0,10)}.`);
+  return token;
+}
+
+function handleInferenceResult(data,meta){
+  if(!data?.id)return;
+  const p=state.pending.get(data.id);
+  if(!p)return;
+  clearTimeout(p.timer);
+  state.pending.delete(data.id);
+  if(data.ok)p.resolve({...data,peerId:meta.peerId});
+  else p.reject(new Error(data.error||'remote inference failed'));
+}
+
+function cleanupPeers(){
+  const cutoff=now()-CONFIG.peerStaleMs;
+  for(const [id,p] of state.peers){
+    const connected=[...state.rooms.values()].some(w=>w.peers.has(id));
+    if(!connected&&p.lastSeen<cutoff)state.peers.delete(id);
+    else if(!connected)p.online=false;
+  }
+  for(const [id,ts] of state.seenJobs)if(now()-ts>10*60_000)state.seenJobs.delete(id);
+  for(const [id,arr] of state.ingressUsage){const fresh=arr.filter(t=>t>now()-60_000);if(fresh.length)state.ingressUsage.set(id,fresh);else state.ingressUsage.delete(id)}
+  pruneNodeRoutes();
+  renderPeers();refreshModelSelect();updateStats();drawTopology();renderStatePanel();
+  processRemoteQueue();
+}
+
+function renderPeers(){
+  const box=$('#peerList');box.innerHTML='';
+  const peers=[...state.peers.values()].filter(p=>p.online).sort((a,b)=>(b.share?1:0)-(a.share?1:0)||(a.load||0)-(b.load||0));
+  const stable=new Set(peers.filter(p=>p.verified&&p.node).map(p=>p.node));
+  $('#peerSummary').textContent=`${stable.size} signed node(s) · ${peers.length} live route(s) · ${peers.filter(p=>p.share).length} sharing route(s)`;
+  if(!peers.length){box.innerHTML='<div class="empty">No peers yet. Multiple independent discovery planes and rotating shards continue searching automatically.</div>';return}
+  for(const p of peers.slice(0,120)){
+    const allowed=p.node&&state.allowlist.has(p.node);
+    const div=document.createElement('div');div.className='peer-card';
+    div.innerHTML=`
+      <div class="peer-head">
+        <div class="peer-id"><span class="status-dot ${p.verified?'good':'warn'}"></span> ${esc(p.label||p.id.slice(0,12))}</div>
+        <span class="tag ${p.share?'good':''}">${p.share?'SHARING':'DISCOVERY'}</span>
+        <span class="tag ${p.verified?'good':'warn'}">${p.verified?'SIGNED':'UNVERIFIED'}</span>
+      </div>
+      <div class="endpoint-url">${esc(p.node||p.id)} · route ${esc(p.id.slice(0,10))}</div>
+      <div class="tags">
+        <span class="tag">${esc((p.strategy||'webrtc').toUpperCase())}</span>
+        <span class="tag">active ${esc(p.load||0)}/${esc(p.capacity||0)}</span>
+        <span class="tag">queue ${esc(p.queue||0)}/${esc(p.maxQueue||0)}</span>
+        <span class="tag">${esc((state.nodeRoutes.get(p.node)?.size)||1)} route(s)</span>
+        <span class="tag">${esc(p.accessMode||'policy ?')}</span>
+        ${(p.models||[]).slice(0,5).map(m=>`<span class="tag">${esc(m)}</span>`).join('')}
+        ${(p.models||[]).length>5?`<span class="tag">+${p.models.length-5}</span>`:''}
+      </div>
+      ${p.verified?`<div class="row" style="margin-top:7px">
+        <button class="btn small allow">${allowed?'unallow':'allow'}</button>
+        <button class="btn small grant">grant scoped access</button>
+      </div>`:''}`;
+    if(p.verified){
+      div.querySelector('.allow').onclick=()=>{
+        if(state.allowlist.has(p.node))state.allowlist.delete(p.node);else state.allowlist.add(p.node);
+        persistPolicy();updateGrantSummary();renderPeers();
+      };
+      div.querySelector('.grant').onclick=async()=>{
+        try{await sendGrantToPeer(p.id)}catch(e){log('err',`Grant failed: ${e.message}`)}
+      };
+    }
+    box.append(div);
+  }
+}
+
+function renderRouterState(){
+  const box=$('#routerState');if(!box)return;box.innerHTML='';
+  for(const name of Object.keys(CONFIG.strategyPackages)){
+    const st=state.strategyStatus.get(name)||{status:state.enabledStrategies.has(name)?'idle':'off',detail:''};
+    const rooms=[...state.rooms.values()].filter(w=>w.strategy===name);
+    const routes=new Set();rooms.forEach(w=>w.peers.forEach(p=>routes.add(p)));
+    let relayText='';
+    const mod=state.strategyModules.get(name);
+    try{
+      const sockets=mod?.getRelaySockets?.()||{};
+      const vals=Object.values(sockets);
+      if(vals.length){
+        const open=vals.filter(ws=>ws?.readyState===1).length;
+        relayText=` · relays ${open}/${vals.length}`;
+      }
+    }catch(_){}
+    const div=document.createElement('div');div.className='statline';
+    div.innerHTML=`<span>${esc(CONFIG.strategyLabels[name])}</span><span>${esc(st.status)} · ${rooms.length} room(s) · ${routes.size} route(s)${relayText}${st.detail?' · '+esc(st.detail).slice(0,55):''}</span>`;
+    box.append(div);
+  }
+  const manualRooms=[...state.rooms.values()].filter(w=>w.strategy==='manual');
+  const manualRoutes=manualRooms.reduce((n,w)=>n+w.peers.size,0);
+  const d=document.createElement('div');d.className='statline';
+  d.innerHTML=`<span>MANUAL</span><span>${manualRoutes?'online':'standby'} · ${manualRoutes} direct route(s) · zero signaling service</span>`;
+  box.append(d);
+}
+function renderStatePanel(){
+  const ps=$('#providerState');
+  if(ps)ps.innerHTML=`
+    <div class="statline"><span>sharing</span><span>${state.share?'ON':'OFF'} · ${esc(state.accessMode)}</span></div>
+    <div class="statline"><span>workers</span><span>${state.activeRemoteJobs}/${state.maxJobs} active · ${state.remoteQueue.length}/${state.maxQueue} queued</span></div>
+    <div class="statline"><span>per-peer</span><span>${state.perPeerConcurrent} active · ${state.perPeerQueue} queued · ${state.rpmLimit} RPM · ${state.tpmLimit} est TPM</span></div>
+    <div class="statline"><span>model scope</span><span>${esc(state.serveModels)}</span></div>
+    <div class="statline"><span>max output</span><span>${state.maxRemoteTokens} tokens · ${state.queueTimeoutSec}s queue TTL</span></div>`;
+  const q=$('#queueState');
+  if(q){
+    q.innerHTML=state.remoteQueue.length?'':'<div class="empty">Queue empty</div>';
+    state.remoteQueue.slice(0,20).forEach((j,i)=>{
+      const p=state.peers.get(j.peerId);const d=document.createElement('div');d.className='queue-item';
+      d.innerHTML=`<strong>#${i+1} ${esc(j.data.model||'?')}</strong><br>${esc(p?.node?.slice(0,14)||j.peerId.slice(0,14))} · ${(now()-j.enqueued)/1000|0}s waiting`;
+      q.append(d);
+    });
+  }
+  const g=$('#grantState');
+  if(g){
+    g.innerHTML=state.grants.size?'':'<div class="empty">No imported capability grants</div>';
+    for(const [issuer,token] of state.grants){
+      const d=document.createElement('div');d.className='queue-item';d.textContent=`${issuer.slice(0,18)}… · signed inference grant`;
+      g.append(d);
+    }
+  }
+  renderRouterState();updateGrantSummary();
+}
+
+function findLocalModel(name){
+  const lm=localModels();
+  if(!lm.length)return null;
+  if(!name)return lm[0];
+  return lm.find(x=>x.model===name)||lm.find(x=>x.model.toLowerCase().includes(String(name).toLowerCase()))||null;
+}
+
+async function callOpenAI(endpointUrl,model,messages,extra={}){
+  const ep=state.endpoints.get(endpointUrl);
+  if(!ep||ep.status!=='up')throw new Error('endpoint is not online');
+  const headers={'Content-Type':'application/json','Accept':'application/json'};
+  if(ep.apiKey)headers['Authorization']=`Bearer ${ep.apiKey}`;
+  const payload={
+    model,messages,stream:false,
+    temperature:extra.temperature??0.7,
+    max_tokens:extra.max_tokens??CONFIG.defaultMaxTokens
+  };
+  const res=await fetchTimeout(`${endpointUrl}/v1/chat/completions`,fetchOptsFor(endpointUrl,{
+    method:'POST',headers,body:JSON.stringify(payload)
+  }),180_000);
+  if(!res.ok){
+    let body='';try{body=(await res.text()).slice(0,500)}catch(_){}
+    throw new Error(`inference HTTP ${res.status}${body?': '+body:''}`);
+  }
+  const data=await res.json();
+  const content=data.choices?.[0]?.message?.content ?? data.choices?.[0]?.text;
+  if(content==null)throw new Error('response contained no text choice');
+  return typeof content==='string'?content:JSON.stringify(content);
+}
+
+function routesForNode(node){
+  const ids=[...(state.nodeRoutes.get(node)||[])].filter(id=>state.peers.get(id)?.online);
+  ids.sort((a,b)=>{
+    const pa=state.peers.get(a),pb=state.peers.get(b);
+    const score=p=>((p?.load||0)/(Math.max(1,p?.capacity||1)))+((p?.queue||0)*.05);
+    return score(pa)-score(pb);
+  });
+  return ids;
+}
+function chooseRemotePeer(model,preferredNode=null){
+  const candidates=new Map();
+  for(const p of state.peers.values()){
+    if(!p.online||!p.verified||!p.share||!p.node||!(p.models||[]).includes(model))continue;
+    if(preferredNode&&p.node!==preferredNode)continue;
+    const old=candidates.get(p.node);
+    const score=((p.load||0)/Math.max(1,p.capacity||1))+((p.queue||0)/Math.max(1,p.maxQueue||1));
+    if(!old||score<old.score)candidates.set(p.node,{p,score});
+  }
+  const sorted=[...candidates.values()].sort((a,b)=>a.score-b.score);
+  if(!sorted.length)return null;
+  const chosen=sorted[0].p;
+  const route=routesForNode(chosen.node)[0]||chosen.id;
+  return [route,state.peers.get(route)||chosen];
+}
+function roomForPeer(peerId){
+  const rooms=[...state.rooms.values()].filter(w=>w.peers.has(peerId));
+  // Prefer a room on a different substrate from the last route when available.
+  return rooms[0]||null;
+}
+async function callRemote(peerId,model,prompt,providerNode=null){
+  const first=state.peers.get(peerId);
+  const node=providerNode||first?.node;
+  const routeIds=node?routesForNode(node):[peerId];
+  if(!routeIds.length)throw new Error('provider has no currently connected route');
+  const grant=node?state.grants.get(node):null;
+  let lastErr;
+  for(const routeId of routeIds){
+    const w=roomForPeer(routeId);
+    if(!w)continue;
+    const id=uuid();
+    try{
+      const response=await new Promise(async(resolve,reject)=>{
+        const timer=setTimeout(()=>{state.pending.delete(id);reject(new Error('remote inference timed out'))},CONFIG.requestTimeoutMs);
+        state.pending.set(id,{resolve,reject,timer,peerId:routeId,providerNode:node,started:now(),state:null});
+        try{
+          await w.actions.infer.send({
+            id,model,prompt,grant:grant||null,temperature:0.7,max_tokens:CONFIG.defaultMaxTokens
+          },{target:routeId});
+        }catch(e){clearTimeout(timer);state.pending.delete(id);reject(e)}
+      });
+      return response;
+    }catch(e){
+      lastErr=e;
+      log('warn',`Route ${w.strategy}/${routeId.slice(0,8)} failed for ${node?.slice(0,10)||'peer'}; trying alternate route.`);
+    }
+  }
+  throw lastErr||new Error('all direct provider routes failed');
+}
+
+function addMessage(role,text,meta=''){
+  const box=$('#messages');
+  const div=document.createElement('div');div.className=`msg ${role}`;
+  div.innerHTML=`${meta?`<div class="meta">${esc(meta)}</div>`:''}${esc(text)}`;
+  box.append(div);box.scrollTop=box.scrollHeight;return div;
+}
+
+async function runPrompt(){
+  const prompt=$('#promptInput').value.trim();
+  if(!prompt)return;
+  const route=$('#routeSelect').value;
+  let choice=null;
+  try{choice=JSON.parse($('#modelSelect').value)}catch(_){}
+  if(!choice){addMessage('system','No model is available. Scan/add a local engine or wait for a sharing mesh peer.','route');return}
+  $('#sendBtn').disabled=true;$('#jobProgress').style.width='18%';
+  addMessage('user',prompt,'you');
+  $('#promptInput').value='';
+  const t0=performance.now();
+  try{
+    let text,meta;
+    if(route==='local'){
+      const m=findLocalModel(choice.model);
+      if(!m)throw new Error(`model ${choice.model} is not available locally`);
+      $('#jobProgress').style.width='45%';
+      state.localActiveJobs++;updateStats();
+      text=await callOpenAI(m.endpoint,m.model,[{role:'user',content:prompt}]);
+      meta=`LOCAL · ${m.model} · ${Math.round(performance.now()-t0)}ms`;
+      state.lastRoute='local';
+    }else if(route==='mesh'){
+      const rp=chooseRemotePeer(choice.model,choice.peerId);
+      if(!rp)throw new Error(`no connected sharing peer currently advertises ${choice.model}`);
+      $('#jobProgress').style.width='45%';
+      const res=await callRemote(rp[0],choice.model,prompt,choice.providerNode||rp[1]?.node);
+      text=res.text;meta=`MESH · ${res.model||choice.model} · peer ${rp[0].slice(0,8)} · ${res.latency_ms||Math.round(performance.now()-t0)}ms worker`;
+      state.lastRoute='mesh';
+    }else{
+      // AUTO always prefers ownership/local execution when exact model exists.
+      const m=findLocalModel(choice.model);
+      if(m){
+        $('#jobProgress').style.width='45%';
+        state.localActiveJobs++;updateStats();
+        text=await callOpenAI(m.endpoint,m.model,[{role:'user',content:prompt}]);
+        meta=`AUTO→LOCAL · ${m.model} · ${Math.round(performance.now()-t0)}ms`;
+        state.lastRoute='local';
+      }else{
+        const rp=chooseRemotePeer(choice.model,choice.peerId);
+        if(!rp)throw new Error('no route to selected model');
+        $('#jobProgress').style.width='45%';
+        const res=await callRemote(rp[0],choice.model,prompt,choice.providerNode||rp[1]?.node);
+        text=res.text;meta=`AUTO→MESH · ${res.model||choice.model} · peer ${rp[0].slice(0,8)}`;
+        state.lastRoute='mesh';
+      }
+    }
+    $('#jobProgress').style.width='100%';
+    addMessage('assistant',text,meta);
+  }catch(e){
+    addMessage('system',`Inference failed: ${e.message}`,'error');
+    log('err',`Inference failed: ${e.message}`);
+  }finally{
+    state.localActiveJobs=Math.max(0,state.localActiveJobs-1);
+    updateStats();setTimeout(()=>$('#jobProgress').style.width='0%',450);
+    $('#sendBtn').disabled=false;
+  }
+}
+
+function updateStats(){
+  const peers=[...state.peers.values()].filter(p=>p.online);
+  const models=new Set([...localModels().map(x=>x.model),...remoteModels().map(x=>x.model)]);
+  setPill('#peerPill',peers.length?'good':'',`<strong>PEERS</strong> ${peers.length}`);
+  setPill('#modelPill',models.size?'good':'',`<strong>MODELS</strong> ${models.size}`);
+  if(state.joined){
+    const planes=new Set([...state.rooms.values()].filter(w=>w.strategy!=='manual').map(w=>w.strategy)).size;
+    let openRelays=0,totalRelays=0;
+    for(const mod of state.strategyModules.values()){
+      try{const vals=Object.values(mod?.getRelaySockets?.()||{});totalRelays+=vals.length;openRelays+=vals.filter(ws=>ws?.readyState===1).length}catch(_){}
+    }
+    setPill('#meshPill',planes?'good':'warn',`<strong>MESH</strong> ${planes}P${totalRelays?` · ${openRelays}/${totalRelays}R`:''}`);
+  }
+  $('#topologySub').textContent=`${peers.length} connected · ${peers.filter(p=>p.share).length} inference workers · ${localModels().length} local model routes`;
+}
+
+function toggleButton(btn,on){
+  btn.classList.toggle('on',on);
+}
+
+function resizeCanvas(){
+  const c=$('#meshCanvas'),r=c.getBoundingClientRect(),dpr=Math.min(devicePixelRatio||1,2);
+  c.width=Math.floor(r.width*dpr);c.height=Math.floor(r.height*dpr);
+  c._dpr=dpr;drawTopology();
+}
+
+function drawTopology(){
+  const c=$('#meshCanvas');if(!c.width)return;
+  const dpr=c._dpr||1,ctx=c.getContext('2d');
+  const w=c.width/dpr,h=c.height/dpr;
+  ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
+
+  const peers=[...state.peers.values()].filter(p=>p.online).slice(0,72);
+  const cx=w/2,cy=h/2;
+  const radius=Math.min(w,h)*.37;
+
+  // subtle rings
+  ctx.strokeStyle='rgba(255,255,255,.045)';ctx.lineWidth=1;
+  for(const rr of [radius*.45,radius*.8,radius]){
+    ctx.beginPath();ctx.arc(cx,cy,rr,0,Math.PI*2);ctx.stroke();
+  }
+
+  // center node
+  ctx.fillStyle='#f4bd32';ctx.beginPath();ctx.arc(cx,cy,6,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#9aa3ab';ctx.font='9px ui-monospace,monospace';ctx.textAlign='center';
+  ctx.fillText('YOU',cx,cy+20);
+
+  peers.forEach((p,i)=>{
+    const a=(i/Math.max(1,peers.length))*Math.PI*2 + state.topologyTick*.001;
+    const jitter=((hashTiny(p.id)%100)/100-.5)*radius*.24;
+    const r=radius+jitter;
+    const x=cx+Math.cos(a)*r,y=cy+Math.sin(a)*r;
+    ctx.strokeStyle=p.share?'rgba(110,212,155,.28)':'rgba(119,201,212,.18)';
+    ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(x,y);ctx.stroke();
+    ctx.fillStyle=p.share?'#6ed49b':'#77c9d4';
+    ctx.beginPath();ctx.arc(x,y,p.share?4:3,0,Math.PI*2);ctx.fill();
+  });
+}
+function hashTiny(s){let h=2166136261;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)}return h>>>0}
+
+function compatibility(){
+  const issues=[];
+  if(!window.isSecureContext)issues.push('This page is not in a secure context; host it on HTTPS.');
+  if(!window.RTCPeerConnection)issues.push('WebRTC unavailable; mesh peering will not work in this browser.');
+  if(!crypto?.subtle)issues.push('WebCrypto unavailable.');
+  if(issues.length){
+    $('#compatBanner').textContent=issues.join(' ');
+    $('#compatBanner').classList.add('show');
+  }
+  setPill('#securePill',window.isSecureContext?'good':'bad',`<strong>HTTPS</strong> ${window.isSecureContext?'OK':'NO'}`);
+}
+
+/* ---------- UI bindings ---------- */
+$('#copyNodeBtn').onclick=async()=>{await navigator.clipboard.writeText(state.nodeId);log('ok','Node ID copied.')};
+$('#grantLanBtn').onclick=requestLanPermission;
+$('#checkPermBtn').onclick=checkPermissions;
+$('#scanBtn').onclick=scanCommon;
+$('#addEndpointBtn').onclick=async()=>{
+  const url=normalizeBaseUrl($('#endpointInput').value);
+  if(!url)return;
+  await probeEndpoint(url,'custom',$('#apiKeyInput').value);
+};
+$('#endpointInput').addEventListener('keydown',e=>{if(e.key==='Enter')$('#addEndpointBtn').click()});
+$('#joinBtn').onclick=()=>state.joined?leaveMesh():joinMesh();
+$('#advertiseToggle').onclick=()=>{
+  state.advertise=!state.advertise;toggleButton($('#advertiseToggle'),state.advertise);persistPolicy();scheduleAnnounce();
+};
+$('#shareToggle').onclick=()=>{
+  state.share=!state.share;toggleButton($('#shareToggle'),state.share);persistPolicy();scheduleAnnounce();
+  log(state.share?'warn':'info',state.share?'Remote inference sharing ENABLED. Connected peers may now submit inference jobs.':'Remote inference sharing disabled.');
+};
+for(const [id,key,min,max] of [
+  ['maxJobs','maxJobs',1,32],['perPeerConcurrent','perPeerConcurrent',1,16],['perPeerQueue','perPeerQueue',0,64],['maxQueue','maxQueue',0,256],
+  ['rpmLimit','rpmLimit',1,10000],['tpmLimit','tpmLimit',256,10000000],
+  ['maxRemoteTokens','maxRemoteTokens',16,65536],['queueTimeoutSec','queueTimeoutSec',5,3600],
+  ['grantHours','grantHours',1,8760]
+]){
+  $('#'+id).onchange=()=>{state[key]=clamp(Number($('#'+id).value)||min,min,max);persistPolicy();scheduleAnnounce();processRemoteQueue()};
+}
+$('#grantModels').onchange=()=>{state.grantModels=$('#grantModels').value.trim()||'*';persistPolicy()};
+$('#serveModels').onchange=()=>{state.serveModels=$('#serveModels').value.trim()||'*';persistPolicy();scheduleAnnounce()};
+$('#accessMode').onchange=()=>{state.accessMode=$('#accessMode').value;persistPolicy();scheduleAnnounce()};
+$('#importGrantBtn').onclick=async()=>{
+  const token=$('#grantImport').value.trim();if(!token)return;
+  const obj=await inspectCapabilityToken(token);
+  if(!obj||obj.body.exp<=now()||(obj.body.sub!=='*'&&obj.body.sub!==state.nodeId)){
+    log('err','Capability token is invalid, expired, or issued to another identity.');return;
+  }
+  state.grants.set(obj.body.iss,token);persistPolicy();$('#grantImport').value='';updateGrantSummary();renderStatePanel();
+  log('ok',`Imported capability token from ${obj.body.iss.slice(0,10)}.`);
+};
+$('#announceBtn').onclick=()=>{broadcastHello();log('info','Capability announcement broadcast.')};
+$('#refreshModelsBtn').onclick=async()=>{
+  await Promise.allSettled([...state.endpoints.values()].map(ep=>probeEndpoint(ep.url,ep.label,ep.apiKey||'')));
+  broadcastHello();
+};
+$('#sendBtn').onclick=runPrompt;
+$('#promptInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();runPrompt()}});
+
+$$('.strategyToggle').forEach(b=>b.onclick=async()=>{
+  const s=b.dataset.strategy;
+  if(state.enabledStrategies.has(s)){
+    state.enabledStrategies.delete(s);b.classList.remove('on');
+    for(const k of [...state.rooms.keys()])if(k.startsWith(s+':'))leaveOneRoom(k);
+    setStrategyStatus(s,'off','disabled');
+  }else{
+    if(s==='wsrelay'&&!parseWsRelayUrls().length){log('warn','Add at least one wss:// community relay before enabling WS RELAY.');return}
+    state.enabledStrategies.add(s);b.classList.add('on');
+    if(state.joined)await joinStrategy(s);
+  }
+  persistPolicy();renderRouterState();updateStats();
+});
+$('#manualOfferBtn').onclick=async()=>{try{await createManualOffer()}catch(e){log('err',`Manual offer failed: ${e.message}`)}};
+$('#manualAnswerBtn').onclick=async()=>{try{await answerManualOffer()}catch(e){log('err',`Manual answer failed: ${e.message}`)}};
+$('#manualFinishBtn').onclick=async()=>{try{await acceptManualAnswer()}catch(e){log('err',`Manual finish failed: ${e.message}`)}};
+$('#wsRelayUrls').addEventListener('change',()=>{localStorage.setItem('oim.wsRelayUrls',$('#wsRelayUrls').value);if(state.joined&&state.enabledStrategies.has('wsrelay')){for(const k of [...state.rooms.keys()])if(k.startsWith('wsrelay:'))leaveOneRoom(k);joinStrategy('wsrelay')}});
+$('#turnConfig').addEventListener('change',()=>localStorage.setItem('oim.turnConfig',$('#turnConfig').value));
+
+$('#namespaceInput').addEventListener('change',()=>{if(state.joined){leaveMesh();setTimeout(joinMesh,100)}});
+$('#discoveryMode').addEventListener('change',()=>{if(state.joined){leaveMesh();setTimeout(joinMesh,100)}});
+
+$$('.tab').forEach(b=>b.onclick=()=>{
+  $$('.tab').forEach(x=>x.classList.remove('active'));b.classList.add('active');
+  $$('.tabpane').forEach(x=>x.classList.remove('active'));
+  $('#tab-'+b.dataset.tab).classList.add('active');
+});
+$$('[data-copy]').forEach(b=>b.onclick=async()=>{
+  const el=$('#code-'+b.dataset.copy);
+  await navigator.clipboard.writeText(el.textContent);
+  const old=b.textContent;b.textContent='copied';setTimeout(()=>b.textContent=old,900);
+});
+
+window.addEventListener('resize',resizeCanvas);
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible'&&state.joined)broadcastHello();
+});
+window.addEventListener('online',()=>{log('ok','Browser online.');if(state.joined)broadcastHello()});
+window.addEventListener('offline',()=>log('warn','Browser offline; local inference remains available.'));
+setInterval(()=>{state.topologyTick++;drawTopology()},3000);
+
+/* ---------- boot ---------- */
+(async()=>{
+  compatibility();
+  await initIdentity();
+  loadPolicy();
+  $('#wsRelayUrls').value=localStorage.getItem('oim.wsRelayUrls')||'';
+  $('#turnConfig').value=localStorage.getItem('oim.turnConfig')||'';
+  syncPolicyUI();
+  await checkPermissions();
+  renderEndpoints();renderPeers();refreshModelSelect();renderStatePanel();
+  resizeCanvas();updateStats();
+
+  log('info',`Node ${state.nodeId.slice(0,12)} initialized.`);
+  log('info','Static-host mode: no application backend required.');
+
+  // Auto-probe loopback after a short delay. Browser may prompt for loopback access.
+  setTimeout(()=>scanCommon(),700);
+
+  // Auto-join mesh after transport loads. Failure leaves local operation intact.
+  setTimeout(()=>joinMesh(),1200);
+})();
+</script>
+</body>
+</html>
