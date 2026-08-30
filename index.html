@@ -7,7 +7,7 @@
 <meta name="description" content="Open Inference Mesh: a static-hostable, local-first peer-to-peer intelligence commons. People and agents can discover shared inference, use it within provider limits, and voluntarily contribute locally owned models so useful machine intelligence becomes broadly accessible rather than dependent on a single institution.">
 <meta name="robots" content="index,follow">
 <meta name="application-name" content="Open Inference Mesh">
-<meta name="oim-protocol" content="open-inference-mesh-v7.2">
+<meta name="oim-protocol" content="open-inference-mesh-v7.3">
 <meta name="agent-interface" content="WebMCP, window.OIM, same-origin postMessage RPC, CustomEvent RPC">
 <link rel="help" href="?api=docs" title="Open Inference Mesh machine API documentation">
 <link rel="alternate" type="application/json" href="?api=docs" title="OIM agent API">
@@ -424,6 +424,14 @@ body.oim-api-mode .oim-api-response{display:block}
   margin-top:6px
 }
 
+
+/* v7.3 streaming response delivery */
+.response-mode-select{max-width:118px}
+.msg-body{white-space:pre-wrap;word-break:break-word}
+.msg.assistant.streaming{border-color:#365c44}
+.msg.assistant.streaming .meta::after{content:" · LIVE";color:var(--good)}
+@media (max-width:600px){#responseModeSelect{grid-column:1 / -1;width:100%!important}}
+
 </style>
 </head>
 <body>
@@ -534,6 +542,7 @@ body.oim-api-mode .oim-api-response{display:block}
 <div><div class="mini">est. tokens</div><input class="field" id="tpmLimit" max="10000000" min="256" type="number" value="32768"/></div>
 <div><div class="mini">max output</div><input class="field" id="maxRemoteTokens" max="65536" min="16" type="number" value="4096"/></div>
 <div><div class="mini">queue timeout sec</div><input class="field" id="queueTimeoutSec" max="3600" min="5" type="number" value="120"/></div>
+<div><div class="mini">chunk chars</div><input class="field" id="responseChunkSize" max="4096" min="32" type="number" value="256"/></div>
 </div>
 <div class="label">Manual capability grants</div>
 <div class="control-grid">
@@ -625,6 +634,10 @@ wss://relay2.example"></textarea>
             <option value="local">LOCAL ONLY</option>
             <option value="mesh">MESH ONLY</option>
           </select>
+          <select id="responseModeSelect" class="field response-mode-select" aria-label="Inference response delivery mode">
+            <option value="stream" selected>STREAM</option>
+            <option value="chunked">CHUNKED</option>
+          </select>
           <select id="modelSelect" class="field" aria-label="Inference model route">
             <option value="">No model discovered</option>
           </select>
@@ -711,7 +724,10 @@ wss://relay2.example"></textarea>
         <div class="agent-quick">
           <div class="label" style="margin-top:0">One-call inference</div>
           <div class="hint"><strong>JavaScript:</strong> agents can use the mesh without clicking UI.</div>
-          <div class="code">const r = await window.OIM.infer("your prompt");
+          <div class="code">const r = await window.OIM.infer("your prompt", {
+  response_mode: "stream",
+  on_chunk: c => console.log(c.delta)
+});
 console.log(r.text);</div>
           <div class="label">URL API</div>
           <div class="code">?api=docs
@@ -720,7 +736,8 @@ console.log(r.text);</div>
 ?api=join
 ?api=bootstrap&amp;share=1&amp;agent_public=1&amp;models=*
 ?api=share&amp;enabled=1&amp;agent_public=1&amp;models=*
-?api=infer&amp;prompt=hello&amp;route=auto
+?api=infer&amp;prompt=hello&amp;route=auto&amp;response_mode=stream
+?api=infer&amp;prompt=hello&amp;route=auto&amp;response_mode=chunked&amp;chunk_size=256
 ?api=infer&amp;prompt=hello&amp;model=MODEL_NAME&amp;max_tokens=2048</div>
           <div class="label">Participate / propagate</div>
           <div class="code">1. ?api=docs
@@ -903,6 +920,8 @@ const CONFIG = {
   peerStaleMs: 70_000,
   requestTimeoutMs: 240_000,
   defaultMaxTokens: 2048,
+  defaultResponseMode: 'stream',
+  defaultChunkSize: 256,
   strategyPackages: {
     nostr: '@trystero-p2p/nostr',
     torrent: '@trystero-p2p/torrent',
@@ -1004,7 +1023,9 @@ const state = {
   heartbeatTimer: null,
   cleanupTimer: null,
   topologyTick: 0,
-  lastRoute: null
+  lastRoute: null,
+  responseMode: 'stream',
+  responseChunkSize: 256
 };
 
 function log(level, message){
@@ -1131,7 +1152,7 @@ async function initIdentity(){
 function loadPolicy(){
   try{
     const p=JSON.parse(localStorage.getItem('oim.policy')||'{}');
-    for(const k of ['advertise','share','agentPublicAccess','accessMode','maxJobs','perPeerConcurrent','perPeerQueue','maxQueue','rpmLimit','tpmLimit','maxRemoteTokens','queueTimeoutSec','grantHours','grantModels','serveModels','nknEnabled','natsEnabled','natsTargetPeers','natsReservoirSize']){
+    for(const k of ['advertise','share','agentPublicAccess','accessMode','responseMode','responseChunkSize','maxJobs','perPeerConcurrent','perPeerQueue','maxQueue','rpmLimit','tpmLimit','maxRemoteTokens','queueTimeoutSec','grantHours','grantModels','serveModels','nknEnabled','natsEnabled','natsTargetPeers','natsReservoirSize']){
       if(p[k]!==undefined) state[k]=p[k];
     }
     const a=JSON.parse(localStorage.getItem('oim.allowlist')||'[]');
@@ -1150,7 +1171,7 @@ function loadPolicy(){
 }
 function persistPolicy(){
   localStorage.setItem('oim.policy',JSON.stringify({
-    advertise:state.advertise,share:state.share,agentPublicAccess:state.agentPublicAccess,accessMode:state.accessMode,
+    advertise:state.advertise,share:state.share,agentPublicAccess:state.agentPublicAccess,accessMode:state.accessMode,responseMode:state.responseMode,responseChunkSize:state.responseChunkSize,
     maxJobs:state.maxJobs,perPeerConcurrent:state.perPeerConcurrent,perPeerQueue:state.perPeerQueue,maxQueue:state.maxQueue,
     rpmLimit:state.rpmLimit,tpmLimit:state.tpmLimit,maxRemoteTokens:state.maxRemoteTokens,
     queueTimeoutSec:state.queueTimeoutSec,grantHours:state.grantHours,grantModels:state.grantModels,serveModels:state.serveModels,nknEnabled:state.nknEnabled,natsEnabled:state.natsEnabled,natsTargetPeers:state.natsTargetPeers,natsReservoirSize:state.natsReservoirSize
@@ -1167,6 +1188,8 @@ function syncPolicyUI(){
   toggleButton($('#shareToggle'),state.share);
   if($('#agentPublicToggle'))toggleButton($('#agentPublicToggle'),state.agentPublicAccess);
   $('#accessMode').value=state.accessMode;
+  if($('#responseModeSelect'))$('#responseModeSelect').value=state.responseMode||CONFIG.defaultResponseMode;
+  if($('#responseChunkSize'))$('#responseChunkSize').value=state.responseChunkSize||CONFIG.defaultChunkSize;
   for(const [id,k] of [
     ['maxJobs','maxJobs'],['perPeerConcurrent','perPeerConcurrent'],['perPeerQueue','perPeerQueue'],['maxQueue','maxQueue'],
     ['rpmLimit','rpmLimit'],['tpmLimit','tpmLimit'],['maxRemoteTokens','maxRemoteTokens'],
@@ -1572,6 +1595,7 @@ async function joinOneRoom(strategy,logical,kind,shard){
     hello:room.makeAction('oim-hello'),
     infer:room.makeAction('oim-infer'),
     result:room.makeAction('oim-result'),
+    delta:room.makeAction('oim-delta'),
     state:room.makeAction('oim-state'),
     grant:room.makeAction('oim-grant'),
     ping:room.makeAction('oim-ping'),
@@ -1600,6 +1624,7 @@ async function joinOneRoom(strategy,logical,kind,shard){
   actions.hello.onMessage=(data,meta)=>handleHello(data,meta,wrapper);
   actions.infer.onMessage=(data,meta)=>handleRemoteInference(data,meta,wrapper);
   actions.result.onMessage=(data,meta)=>handleInferenceResult(data,meta,wrapper);
+  actions.delta.onMessage=(data,meta)=>handleInferenceDelta(data,meta,wrapper);
   actions.state.onMessage=(data,meta)=>handleRemoteState(data,meta,wrapper);
   actions.grant.onMessage=(data,meta)=>handleIncomingGrant(data,meta,wrapper);
   actions.pex.onMessage=(data,meta)=>handlePeerExchange(data,meta,wrapper);
@@ -1866,13 +1891,14 @@ function setupNatsRtcRoute(pc,dc,remoteNode,sessionId,role){
     dc,pc,key,logical:sessionId,strategy:'nats-rtc',kind:'rendezvous',shard:-1,name:'nats-rendezvous',
     peers:new Set(),actions:{},remoteNode,sessionId
   };
-  for(const name of ['hello','infer','result','state','grant','ping','pex'])wrapper.actions[name]=makeManualAction(wrapper,name);
+  for(const name of ['hello','infer','result','delta','state','grant','ping','pex'])wrapper.actions[name]=makeManualAction(wrapper,name);
   state.rooms.set(key,wrapper);
   state.nats.rtcSessions.set(sessionId,{pc,dc,wrapper,remoteNode,role,created:now(),closed:false});
 
   wrapper.actions.hello.onMessage=(data,meta)=>handleHello(data,meta,wrapper);
   wrapper.actions.infer.onMessage=(data,meta)=>handleRemoteInference(data,meta,wrapper);
   wrapper.actions.result.onMessage=(data,meta)=>handleInferenceResult(data,meta,wrapper);
+  wrapper.actions.delta.onMessage=(data,meta)=>handleInferenceDelta(data,meta,wrapper);
   wrapper.actions.state.onMessage=(data,meta)=>handleRemoteState(data,meta,wrapper);
   wrapper.actions.grant.onMessage=(data,meta)=>handleIncomingGrant(data,meta,wrapper);
   wrapper.actions.pex.onMessage=(data,meta)=>handlePeerExchange(data,meta,wrapper);
@@ -2091,8 +2117,8 @@ function makeNknAction(wrapper,name){
 function getNknWrapper(addr){
   if(state.nknWrappers.has(addr))return state.nknWrappers.get(addr);
   const peerId=nknPeerId(addr),key=`nkn:${addr}`;const wrapper={key,logical:key,strategy:'nkn',kind:'overlay',shard:-1,name:'nkn-overlay',addr,peerId,peers:new Set([peerId]),actions:{},room:{leave:()=>{}}};
-  for(const name of ['hello','infer','result','state','grant','ping','pex'])wrapper.actions[name]=makeNknAction(wrapper,name);
-  wrapper.actions.hello.onMessage=(data,meta)=>handleHello(data,meta,wrapper);wrapper.actions.infer.onMessage=(data,meta)=>handleRemoteInference(data,meta,wrapper);wrapper.actions.result.onMessage=(data,meta)=>handleInferenceResult(data,meta,wrapper);wrapper.actions.state.onMessage=(data,meta)=>handleRemoteState(data,meta,wrapper);wrapper.actions.grant.onMessage=(data,meta)=>handleIncomingGrant(data,meta,wrapper);wrapper.actions.pex.onMessage=(data,meta)=>handlePeerExchange(data,meta,wrapper);
+  for(const name of ['hello','infer','result','delta','state','grant','ping','pex'])wrapper.actions[name]=makeNknAction(wrapper,name);
+  wrapper.actions.hello.onMessage=(data,meta)=>handleHello(data,meta,wrapper);wrapper.actions.infer.onMessage=(data,meta)=>handleRemoteInference(data,meta,wrapper);wrapper.actions.result.onMessage=(data,meta)=>handleInferenceResult(data,meta,wrapper);wrapper.actions.delta.onMessage=(data,meta)=>handleInferenceDelta(data,meta,wrapper);wrapper.actions.state.onMessage=(data,meta)=>handleRemoteState(data,meta,wrapper);wrapper.actions.grant.onMessage=(data,meta)=>handleIncomingGrant(data,meta,wrapper);wrapper.actions.pex.onMessage=(data,meta)=>handlePeerExchange(data,meta,wrapper);
   wrapper.actions.ping.onMessage=(data,meta)=>{upsertPeer(meta.peerId,{lastSeen:now(),online:true});if(data?.echo)wrapper.actions.ping.send({nonce:data.nonce,reply:true,ts:now()},{target:meta.peerId}).catch(()=>{})};state.nknWrappers.set(addr,wrapper);return wrapper;
 }
 async function handleNknPayload(src,payload){
@@ -2154,12 +2180,13 @@ function setupManualRoute(pc,dc,role='manual'){
     dc,pc,key,logical:routeId,strategy:'manual',kind:'manual',shard:-1,name:'manual-rendezvous',
     peers:new Set(),actions:{}
   };
-  for(const name of ['hello','infer','result','state','grant','ping','pex'])wrapper.actions[name]=makeManualAction(wrapper,name);
+  for(const name of ['hello','infer','result','delta','state','grant','ping','pex'])wrapper.actions[name]=makeManualAction(wrapper,name);
   state.rooms.set(key,wrapper);
 
   wrapper.actions.hello.onMessage=(data,meta)=>handleHello(data,meta,wrapper);
   wrapper.actions.infer.onMessage=(data,meta)=>handleRemoteInference(data,meta,wrapper);
   wrapper.actions.result.onMessage=(data,meta)=>handleInferenceResult(data,meta,wrapper);
+  wrapper.actions.delta.onMessage=(data,meta)=>handleInferenceDelta(data,meta,wrapper);
   wrapper.actions.state.onMessage=(data,meta)=>handleRemoteState(data,meta,wrapper);
   wrapper.actions.grant.onMessage=(data,meta)=>handleIncomingGrant(data,meta,wrapper);
   wrapper.actions.pex.onMessage=(data,meta)=>handlePeerExchange(data,meta,wrapper);
@@ -2498,8 +2525,16 @@ async function executeRemoteJob(job){
   log('info',`Serving ${data.id.slice(0,8)} for ${peerMeta.node.slice(0,10)} on ${auth.match.model}; ${state.remoteQueue.length} queued.`);
   const t0=performance.now();
   try{
+    const responseMode=data.response_mode==='chunked'?'chunked':'stream';
+    const chunkSize=clamp(Number(data.chunk_size)||CONFIG.defaultChunkSize,32,4096);
+    let seq=0;
     const completion=await callOpenAI(auth.match.endpoint,auth.match.model,[{role:'user',content:auth.prompt}],{
-      temperature:clamp(Number(data.temperature)||0.7,0,2),max_tokens:auth.maxTokens,return_meta:true
+      temperature:clamp(Number(data.temperature)||0.7,0,2),
+      max_tokens:auth.maxTokens,return_meta:true,
+      response_mode:responseMode,chunk_size:chunkSize,
+      on_delta:async delta=>{
+        await wrapper.actions.delta.send({id:data.id,delta,seq:seq++,mode:responseMode,ts:now()},{target:peerId}).catch(()=>{});
+      }
     });
     const latencyMs=Math.max(1,Math.round(performance.now()-t0));
     const outputTokens=completion.completion_tokens||estimateTextTokens(completion.text);
@@ -2511,6 +2546,8 @@ async function executeRemoteJob(job){
       tps:Number(sampleTps.toFixed(2)),
       tps_ema:Number(state.providerPerf.tpsEma.toFixed(2)),
       usage:completion.usage||null,
+      response_mode:responseMode,
+      chunk_size:responseMode==='chunked'?chunkSize:null,
       queue_ms:Math.max(0,(job.started||now())-(job.enqueued||now()))
     },{target:peerId});
     sendJobState(wrapper,peerId,data.id,'complete');
@@ -2598,6 +2635,18 @@ async function sendGrantToPeer(peerId){
   return token;
 }
 
+function handleInferenceDelta(data,meta,wrapper){
+  if(!data?.id||typeof data.delta!=='string')return;
+  const pending=state.pending.get(data.id);
+  if(!pending)return;
+  pending.streamText=(pending.streamText||'')+data.delta;
+  pending.lastDeltaAt=now();
+  if(typeof pending.onDelta==='function'){
+    try{pending.onDelta(data.delta,pending.streamText,{mode:data.mode||'stream',seq:Number(data.seq)||0,peerId:meta.peerId})}catch(_){}
+  }
+  const peer=state.peers.get(meta.peerId);
+  if(peer){peer.inferenceActive=true;peer.lastActivityAt=now()}
+}
 function handleInferenceResult(data,meta){
   if(!data?.id)return;
   const pending=state.pending.get(data.id);
@@ -2983,34 +3032,114 @@ function findLocalModel(name){
 async function callOpenAI(endpointUrl,model,messages,extra={}){
   const ep=state.endpoints.get(endpointUrl);
   if(!ep||ep.status!=='up')throw new Error('endpoint is not online');
-  const headers={'Content-Type':'application/json','Accept':'application/json'};
+
+  const responseMode=extra.response_mode==='chunked'?'chunked':'stream';
+  const chunkSize=clamp(Number(extra.chunk_size)||state.responseChunkSize||CONFIG.defaultChunkSize,32,4096);
+  const headers={'Content-Type':'application/json','Accept':'text/event-stream, application/json'};
   if(ep.apiKey)headers['Authorization']=`Bearer ${ep.apiKey}`;
+
   const payload={
-    model,messages,stream:false,
+    model,messages,stream:true,
     temperature:extra.temperature??0.7,
     max_tokens:extra.max_tokens??CONFIG.defaultMaxTokens
   };
+
   const res=await fetchTimeout(`${endpointUrl}/v1/chat/completions`,fetchOptsFor(endpointUrl,{
     method:'POST',headers,body:JSON.stringify(payload)
   }),180_000);
+
   if(!res.ok){
     let body='';try{body=(await res.text()).slice(0,500)}catch(_){}
     throw new Error(`inference HTTP ${res.status}${body?': '+body:''}`);
   }
-  const data=await res.json();
-  const content=data.choices?.[0]?.message?.content ?? data.choices?.[0]?.text;
-  if(content==null)throw new Error('response contained no text choice');
-  const text=typeof content==='string'?content:JSON.stringify(content);
-  if(extra.return_meta){
-    return {
-      text,
-      usage:data.usage||null,
-      completion_tokens:Number(data.usage?.completion_tokens)||0,
-      prompt_tokens:Number(data.usage?.prompt_tokens)||0,
-      total_tokens:Number(data.usage?.total_tokens)||0
-    };
+
+  const contentType=(res.headers.get('content-type')||'').toLowerCase();
+
+  // Compatibility fallback for servers that ignore stream:true.
+  if(contentType.includes('application/json')){
+    const data=await res.json();
+    const content=data.choices?.[0]?.message?.content ?? data.choices?.[0]?.text;
+    if(content==null)throw new Error('response contained no text choice');
+    const text=typeof content==='string'?content:JSON.stringify(content);
+    if(extra.on_delta)await extra.on_delta(text,text,{mode:responseMode,final:true});
+    if(extra.return_meta){
+      return {text,usage:data.usage||null,
+        completion_tokens:Number(data.usage?.completion_tokens)||0,
+        prompt_tokens:Number(data.usage?.prompt_tokens)||0,
+        total_tokens:Number(data.usage?.total_tokens)||0};
+    }
+    return text;
   }
-  return text;
+
+  if(!res.body)throw new Error('streaming response has no readable body');
+  const reader=res.body.getReader();
+  const decoder=new TextDecoder();
+  let buffer='',full='',usage=null,chunkBuffer='';
+  let completionTokens=0,promptTokens=0,totalTokens=0;
+
+  const emit=async delta=>{
+    if(!delta)return;
+    full+=delta;
+    if(responseMode==='stream'){
+      if(extra.on_delta)await extra.on_delta(delta,full,{mode:'stream',final:false});
+    }else{
+      chunkBuffer+=delta;
+      if(chunkBuffer.length>=chunkSize){
+        const out=chunkBuffer;chunkBuffer='';
+        if(extra.on_delta)await extra.on_delta(out,full,{mode:'chunked',final:false});
+      }
+    }
+  };
+
+  const consume=async raw=>{
+    raw=String(raw||'').trim();
+    if(!raw)return false;
+    if(raw==='[DONE]')return true;
+    let data;try{data=JSON.parse(raw)}catch(_){return false}
+    if(data.usage){
+      usage=data.usage;
+      completionTokens=Number(data.usage.completion_tokens)||completionTokens;
+      promptTokens=Number(data.usage.prompt_tokens)||promptTokens;
+      totalTokens=Number(data.usage.total_tokens)||totalTokens;
+    }
+    const choice=data.choices?.[0];
+    let delta=choice?.delta?.content;
+    if(delta==null)delta=choice?.text;
+    if(delta==null&&typeof choice?.message?.content==='string')delta=choice.message.content;
+    if(Array.isArray(delta))delta=delta.map(x=>x?.text||x?.content||'').join('');
+    if(delta!=null)await emit(typeof delta==='string'?delta:JSON.stringify(delta));
+    return false;
+  };
+
+  let done=false;
+  while(!done){
+    const part=await reader.read();
+    if(part.done)break;
+    buffer+=decoder.decode(part.value,{stream:true});
+    const lines=buffer.split(/\r?\n/);
+    buffer=lines.pop()||'';
+    for(const line of lines){
+      if(!line.trim()||line.startsWith(':'))continue;
+      if(line.startsWith('data:')&&await consume(line.slice(5))){done=true;break}
+    }
+  }
+  buffer+=decoder.decode();
+  if(buffer.trim()){
+    for(const line of buffer.split(/\r?\n/)){
+      if(line.startsWith('data:'))await consume(line.slice(5));
+    }
+  }
+
+  if(responseMode==='chunked'&&chunkBuffer){
+    const out=chunkBuffer;chunkBuffer='';
+    if(extra.on_delta)await extra.on_delta(out,full,{mode:'chunked',final:false});
+  }
+  if(!full)throw new Error('stream completed without response text');
+
+  if(extra.return_meta){
+    return {text:full,usage,completion_tokens:completionTokens,prompt_tokens:promptTokens,total_tokens:totalTokens};
+  }
+  return full;
 }
 
 function routesForNode(node){
@@ -3083,10 +3212,14 @@ async function callRemote(peerId,model,prompt,providerNode=null,requestMeta={}){
     try{
       const response=await new Promise(async(resolve,reject)=>{
         const timer=setTimeout(()=>{state.pending.delete(id);reject(new Error('remote inference timed out'))},CONFIG.requestTimeoutMs);
-        state.pending.set(id,{resolve,reject,timer,peerId:routeId,providerNode:node,started:now(),state:null});
+        state.pending.set(id,{resolve,reject,timer,peerId:routeId,providerNode:node,started:now(),state:null,
+          onDelta:requestMeta.on_delta||null,streamText:'',lastDeltaAt:0});
         try{
           await w.actions.infer.send({
-            id,model,prompt,grant:grant||null,agent:!!requestMeta.agent,temperature:requestMeta.temperature??0.7,max_tokens:requestMeta.max_tokens??CONFIG.defaultMaxTokens
+            id,model,prompt,grant:grant||null,agent:!!requestMeta.agent,
+            response_mode:requestMeta.response_mode==='chunked'?'chunked':'stream',
+            chunk_size:clamp(Number(requestMeta.chunk_size)||state.responseChunkSize||CONFIG.defaultChunkSize,32,4096),
+            temperature:requestMeta.temperature??0.7,max_tokens:requestMeta.max_tokens??CONFIG.defaultMaxTokens
           },{target:routeId});
         }catch(e){clearTimeout(timer);state.pending.delete(id);reject(e)}
       });
@@ -3102,52 +3235,78 @@ async function callRemote(peerId,model,prompt,providerNode=null,requestMeta={}){
 function addMessage(role,text,meta=''){
   const box=$('#messages');
   const div=document.createElement('div');div.className=`msg ${role}`;
-  div.innerHTML=`${meta?`<div class="meta">${esc(meta)}</div>`:''}${esc(text)}`;
+  if(meta){const m=document.createElement('div');m.className='meta';m.textContent=meta;div.append(m)}
+  const body=document.createElement('span');body.className='msg-body';body.textContent=String(text||'');div.append(body);
   box.append(div);box.scrollTop=box.scrollHeight;return div;
+}
+function setMessageText(div,text){
+  if(!div)return;
+  let body=div.querySelector('.msg-body');
+  if(!body){body=document.createElement('span');body.className='msg-body';div.append(body)}
+  body.textContent=String(text||'');
+  const box=$('#messages');if(box)box.scrollTop=box.scrollHeight;
+}
+function setMessageMeta(div,meta){
+  if(!div)return;
+  let m=div.querySelector('.meta');
+  if(!m){m=document.createElement('div');m.className='meta';div.prepend(m)}
+  m.textContent=String(meta||'');
 }
 
 async function runPrompt(){
   const prompt=$('#promptInput').value.trim();
   if(!prompt)return;
   const route=$('#routeSelect').value;
+  const responseMode=$('#responseModeSelect')?.value==='chunked'?'chunked':'stream';
+  const chunkSize=clamp(Number($('#responseChunkSize')?.value)||state.responseChunkSize||CONFIG.defaultChunkSize,32,4096);
   let choice=null;
   try{choice=JSON.parse($('#modelSelect').value)}catch(_){}
   if(!choice){addMessage('system','No model is available. Scan/add a local engine or wait for a sharing mesh peer.','route');return}
+
   $('#sendBtn').disabled=true;$('#jobProgress').style.width='18%';
-  addMessage('user',prompt,'you');
-  $('#promptInput').value='';
+  addMessage('user',prompt,'you');$('#promptInput').value='';
+  const assistant=addMessage('assistant','',`${responseMode.toUpperCase()} · waiting`);
+  assistant.classList.add('streaming');
   const t0=performance.now();
+  let streamed='';
+
+  const onDelta=(delta,full)=>{
+    streamed=full;setMessageText(assistant,full);$('#jobProgress').style.width='70%';
+  };
+
   try{
     let text,meta;
     if(route==='local'){
       const m=findLocalModel(choice.model);
       if(!m)throw new Error(`model ${choice.model} is not available locally`);
-      $('#jobProgress').style.width='45%';
-      state.localActiveJobs++;updateStats();
-      text=await callOpenAI(m.endpoint,m.model,[{role:'user',content:prompt}]);
-      meta=`LOCAL · ${m.model} · ${Math.round(performance.now()-t0)}ms`;
+      $('#jobProgress').style.width='35%';state.localActiveJobs++;updateStats();
+      text=await callOpenAI(m.endpoint,m.model,[{role:'user',content:prompt}],{
+        response_mode:responseMode,chunk_size:chunkSize,on_delta:onDelta
+      });
+      meta=`LOCAL · ${m.model} · ${responseMode.toUpperCase()} · ${Math.round(performance.now()-t0)}ms`;
       state.lastRoute='local';
     }else if(route==='mesh'){
       const rp=chooseRemotePeer(choice.model,choice.providerNode||choice.peerId);
       if(!rp){
         const seen=[...state.peers.values()].filter(p=>p.online&&p.verified&&(p.models||[]).includes(choice.model));
-        const detail=seen.length
-          ? `${seen.length} signed route(s) know the model, but none currently advertise sharing`
-          : `no signed live route currently reports the model`;
+        const detail=seen.length?`${seen.length} signed route(s) know the model, but none currently advertise sharing`:`no signed live route currently reports the model`;
         throw new Error(`no usable mesh route for ${choice.model}: ${detail}`);
       }
-      $('#jobProgress').style.width='45%';
-      const res=await callRemote(rp[0],choice.model,prompt,choice.providerNode||rp[1]?.node);
-      text=res.text;meta=`MESH · ${res.model||choice.model} · peer ${rp[0].slice(0,8)} · ${res.latency_ms||Math.round(performance.now()-t0)}ms worker`;
+      $('#jobProgress').style.width='35%';
+      const res=await callRemote(rp[0],choice.model,prompt,choice.providerNode||rp[1]?.node,{
+        response_mode:responseMode,chunk_size:chunkSize,on_delta:onDelta
+      });
+      text=res.text;
+      meta=`MESH · ${res.model||choice.model} · ${responseMode.toUpperCase()}${res.tps?` · ${formatTps(res.tps)}`:''} · ${res.latency_ms||Math.round(performance.now()-t0)}ms`;
       state.lastRoute='mesh';
     }else{
-      // AUTO always prefers ownership/local execution when exact model exists.
       const m=findLocalModel(choice.model);
       if(m){
-        $('#jobProgress').style.width='45%';
-        state.localActiveJobs++;updateStats();
-        text=await callOpenAI(m.endpoint,m.model,[{role:'user',content:prompt}]);
-        meta=`AUTO→LOCAL · ${m.model} · ${Math.round(performance.now()-t0)}ms`;
+        $('#jobProgress').style.width='35%';state.localActiveJobs++;updateStats();
+        text=await callOpenAI(m.endpoint,m.model,[{role:'user',content:prompt}],{
+          response_mode:responseMode,chunk_size:chunkSize,on_delta:onDelta
+        });
+        meta=`AUTO→LOCAL · ${m.model} · ${responseMode.toUpperCase()} · ${Math.round(performance.now()-t0)}ms`;
         state.lastRoute='local';
       }else{
         const rp=chooseRemotePeer(choice.model,choice.providerNode||choice.peerId);
@@ -3155,21 +3314,22 @@ async function runPrompt(){
           const seen=[...state.peers.values()].filter(p=>p.online&&p.verified&&(p.models||[]).includes(choice.model));
           throw new Error(`no route to selected model ${choice.model}${seen.length?` (${seen.length} signed route(s) present but not shareable)`:' (model advertisement is stale or provider disconnected)'}`);
         }
-        $('#jobProgress').style.width='45%';
-        const res=await callRemote(rp[0],choice.model,prompt,choice.providerNode||rp[1]?.node);
-        text=res.text;meta=`AUTO→MESH · ${res.model||choice.model} · peer ${rp[0].slice(0,8)}`;
+        $('#jobProgress').style.width='35%';
+        const res=await callRemote(rp[0],choice.model,prompt,choice.providerNode||rp[1]?.node,{
+          response_mode:responseMode,chunk_size:chunkSize,on_delta:onDelta
+        });
+        text=res.text;
+        meta=`AUTO→MESH · ${res.model||choice.model} · ${responseMode.toUpperCase()}${res.tps?` · ${formatTps(res.tps)}`:''}`;
         state.lastRoute='mesh';
       }
     }
     $('#jobProgress').style.width='100%';
-    addMessage('assistant',text,meta);
+    setMessageText(assistant,text||streamed);setMessageMeta(assistant,meta);assistant.classList.remove('streaming');
   }catch(e){
-    addMessage('system',`Inference failed: ${e.message}`,'error');
-    log('err',`Inference failed: ${e.message}`);
+    assistant.remove();addMessage('system',`Inference failed: ${e.message}`,'error');log('err',`Inference failed: ${e.message}`);
   }finally{
     state.localActiveJobs=Math.max(0,state.localActiveJobs-1);
-    updateStats();setTimeout(()=>$('#jobProgress').style.width='0%',450);
-    $('#sendBtn').disabled=false;
+    updateStats();setTimeout(()=>$('#jobProgress').style.width='0%',450);$('#sendBtn').disabled=false;
   }
 }
 
@@ -3258,7 +3418,7 @@ const OIM_AGENT_MANIFEST={
   tools:['get_api_docs','get_state','list_models','scan_local','add_endpoint','join_mesh','leave_mesh','run_inference','accept_peer','deny_peer','set_peer_enabled','set_provider_policy','connect_nkn','set_rendezvous','issue_capability','import_capability','announce','create_manual_offer','answer_manual_offer','accept_manual_answer','get_deployment_guide']
 };
 function safeEndpointState(ep){return {url:ep.url,label:ep.label,status:ep.status,type:ep.type||null,latency_ms:ep.latency??null,models:[...(ep.models||[])],last_seen:ep.lastSeen||null,error:ep.error||null}}
-function agentSnapshot(){return {protocol:'open-inference-mesh',version:7,timestamp:now(),secure_context:window.isSecureContext,node:{id:state.nodeId,identity_algorithm:state.identity?.alg||null,mesh_joined:state.joined,nkn_enabled:state.nknEnabled,nkn_status:state.nkn.status,nkn_address:state.nkn.addr||null},provider:{advertise:state.advertise,share:state.share,public_agent_gateway:state.agentPublicAccess,
+function agentSnapshot(){return {protocol:'open-inference-mesh',version:7,timestamp:now(),secure_context:window.isSecureContext,response_delivery:{default:state.responseMode||'stream',supported:['stream','chunked'],chunk_size:state.responseChunkSize||CONFIG.defaultChunkSize},node:{id:state.nodeId,identity_algorithm:state.identity?.alg||null,mesh_joined:state.joined,nkn_enabled:state.nknEnabled,nkn_status:state.nkn.status,nkn_address:state.nkn.addr||null},provider:{advertise:state.advertise,share:state.share,public_agent_gateway:state.agentPublicAccess,
 tokens_per_second:Number(state.providerPerf.tpsEma)||0,last_sample_tokens_per_second:Number(state.providerPerf.lastTps)||0,
 performance_timestamp:Number(state.providerPerf.lastCompletedAt)||0,inference_active:state.activeRemoteJobs>0,access_mode:state.accessMode,served_models:state.serveModels,max_active:state.maxJobs,max_queue:state.maxQueue,peer_active_limit:state.perPeerConcurrent,peer_queue_limit:state.perPeerQueue,rpm_limit:state.rpmLimit,estimated_tpm_limit:state.tpmLimit,max_remote_output_tokens:state.maxRemoteTokens,queue_timeout_sec:state.queueTimeoutSec,active_jobs:state.activeRemoteJobs,queued_jobs:state.remoteQueue.length},endpoints:[...state.endpoints.values()].map(safeEndpointState),local_models:localModels().map(x=>({model:x.model,endpoint:x.endpoint,label:x.label})),remote_models:remoteModels().map(x=>{
   const peer=state.peers.get(x.peerId);
@@ -3295,34 +3455,55 @@ function chooseAgentModel(model,route='auto',providerNode=null){
   if(route==='mesh')return remote[0]?{...remote[0],route:'mesh'}:null;
   return local[0]?{...local[0],route:'local'}:(remote[0]?{...remote[0],route:'mesh'}:null);
 }
-async function agentRunInference({prompt,model=null,route='auto',provider_node=null,max_tokens=CONFIG.defaultMaxTokens,temperature=0.7}={}){
+async function agentRunInference({
+  prompt,model=null,route='auto',provider_node=null,
+  max_tokens=CONFIG.defaultMaxTokens,temperature=0.7,
+  response_mode='stream',chunk_size=CONFIG.defaultChunkSize,on_chunk=null
+}={}){
   prompt=String(prompt||'').trim();
   if(!prompt)throw new Error('prompt required');
   if(prompt.length>CONFIG.maxPromptChars)throw new Error('prompt too large');
   if(!['auto','local','mesh'].includes(route))throw new Error('route must be auto, local, or mesh');
+
+  response_mode=response_mode==='chunked'?'chunked':'stream';
+  chunk_size=clamp(Number(chunk_size)||CONFIG.defaultChunkSize,32,4096);
+
+  const emit=(delta,full,meta={})=>{
+    const detail={delta,text:full,response_mode,...meta};
+    if(typeof on_chunk==='function'){try{on_chunk(detail)}catch(_){}}
+    window.dispatchEvent(new CustomEvent('oim:inference-chunk',{detail}));
+  };
+
   const chosen=chooseAgentModel(model,route,provider_node);
   if(!chosen)throw new Error('no matching local or agent-open mesh model route');
   const t0=performance.now();
+
   if(chosen.route==='local'){
-    const text=await callOpenAI(chosen.endpoint,chosen.model,[{role:'user',content:prompt}],{
+    const completion=await callOpenAI(chosen.endpoint,chosen.model,[{role:'user',content:prompt}],{
       max_tokens:clamp(Number(max_tokens)||CONFIG.defaultMaxTokens,1,65536),
-      temperature:clamp(Number(temperature)||0.7,0,2)
+      temperature:clamp(Number(temperature)||0.7,0,2),
+      response_mode,chunk_size,on_delta:emit,return_meta:true
     });
-    return {ok:true,text,route:'local',model:chosen.model,endpoint:chosen.endpoint,latency_ms:Math.round(performance.now()-t0)};
+    return {ok:true,text:completion.text,route:'local',model:chosen.model,endpoint:chosen.endpoint,
+      response_mode,chunk_size:response_mode==='chunked'?chunk_size:null,usage:completion.usage||null,
+      latency_ms:Math.round(performance.now()-t0)};
   }
+
   const rp=chooseRemotePeer(chosen.model,provider_node||chosen.providerNode,{forAgent:true});
   if(!rp)throw new Error('no agent-open mesh provider is currently reachable for this model');
-  const res=await callRemote(
-    rp[0],chosen.model,prompt,provider_node||chosen.providerNode||rp[1]?.node,
-    {agent:true,max_tokens:clamp(Number(max_tokens)||CONFIG.defaultMaxTokens,1,65536),temperature:clamp(Number(temperature)||0.7,0,2)}
-  );
-  return {
-    ok:true,text:res.text,route:'mesh',model:res.model||chosen.model,
+  const res=await callRemote(rp[0],chosen.model,prompt,provider_node||chosen.providerNode||rp[1]?.node,{
+    agent:true,max_tokens:clamp(Number(max_tokens)||CONFIG.defaultMaxTokens,1,65536),
+    temperature:clamp(Number(temperature)||0.7,0,2),
+    response_mode,chunk_size,on_delta:emit
+  });
+  return {ok:true,text:res.text,route:'mesh',model:res.model||chosen.model,
     provider_node:res.node||chosen.providerNode||rp[1]?.node,
-    latency_ms:Math.round(performance.now()-t0),
-    worker_latency_ms:res.latency_ms||null,queue_ms:res.queue_ms||null
-  };
+    response_mode:res.response_mode||response_mode,chunk_size:res.chunk_size||null,
+    usage:res.usage||null,latency_ms:Math.round(performance.now()-t0),
+    worker_latency_ms:res.latency_ms||null,queue_ms:res.queue_ms||null,
+    tokens_per_second:Number(res.tps)||0};
 }
+
 async function agentSetProviderPolicy(params={}){for(const k of ['advertise','share'])if(params[k]!==undefined)state[k]=!!params[k];if(params.agent_public_access!==undefined)state.agentPublicAccess=!!params.agent_public_access;if(params.access_mode!==undefined){if(!['capability','allowlist','verified'].includes(params.access_mode))throw new Error('invalid access_mode');state.accessMode=params.access_mode}if(params.serve_models!==undefined)state.serveModels=String(params.serve_models||'*');for(const [arg,key,min,max] of [['max_active','maxJobs',1,32],['max_queue','maxQueue',0,256],['peer_active','perPeerConcurrent',1,16],['peer_queue','perPeerQueue',0,64],['rpm','rpmLimit',1,10000],['estimated_tpm','tpmLimit',256,10000000],['max_output_tokens','maxRemoteTokens',16,65536],['queue_timeout_sec','queueTimeoutSec',5,3600]])if(params[arg]!==undefined)state[key]=clamp(Number(params[arg])||min,min,max);persistPolicy();syncPolicyUI();scheduleAnnounce();processRemoteQueue();renderStatePanel();return agentSnapshot().provider}
 async function agentIssueCapability({provider_node,models='*',hours=24}={}){if(!provider_node)throw new Error('provider_node required');const peer=[...state.peers.values()].find(p=>p.online&&p.verified&&p.node===provider_node);if(!peer)throw new Error('peer node not connected');const om=state.grantModels,oh=state.grantHours;try{state.grantModels=String(models||'*');state.grantHours=clamp(Number(hours)||24,1,8760);const token=await sendGrantToPeer(peer.id);return {ok:true,subject:provider_node,models:state.grantModels,hours:state.grantHours,delivered:true}}finally{state.grantModels=om;state.grantHours=oh}}
 async function agentImportCapability({token}={}){token=String(token||'').trim();if(!token)throw new Error('token required');const obj=await inspectCapabilityToken(token);if(!obj||obj.body.exp<=now()||(obj.body.sub!=='*'&&obj.body.sub!==state.nodeId))throw new Error('capability invalid, expired, or bound to another node');state.grants.set(obj.body.iss,token);persistPolicy();updateGrantSummary();renderStatePanel();return {ok:true,issuer:obj.body.iss,subject:obj.body.sub,models:obj.body.models,expires:obj.body.exp,limits:obj.body.limits}}
@@ -3378,7 +3559,8 @@ function agentApiDocs(){
       join:`${base}?api=join`,
       bootstrap:`${base}?api=bootstrap&share=1&agent_public=1&models=*`,
       share:`${base}?api=share&enabled=1&agent_public=1&models=*`,
-      infer:`${base}?api=infer&prompt=hello&route=auto`,
+      infer:`${base}?api=infer&prompt=hello&route=auto&response_mode=stream`,
+      infer_chunked:`${base}?api=infer&prompt=hello&route=auto&response_mode=chunked&chunk_size=256`,
       parameters:{
         api:'docs | state | models | join | bootstrap | share | infer',
         prompt:'required for infer',
@@ -3387,11 +3569,19 @@ function agentApiDocs(){
         provider:'optional stable provider NodeID',
         max_tokens:'optional integer',
         temperature:'optional 0..2',
+        response_mode:'stream (default) | chunked',
+        chunk_size:'target characters per emitted chunk in chunked mode, default 256',
         enabled:'share action, 0 or 1',
         agent_public:'share action, 0 or 1',
         models:'share action, * or comma-separated model names',
         advertise:'share action, 0 or 1'
       }
+    },
+    response_delivery:{
+      default:'stream',
+      modes:{stream:'Forward generation deltas immediately.',chunked:'Buffer deltas into larger frames before forwarding.'},
+      browser_event:'oim:inference-chunk',
+      javascript_callback:'window.OIM.infer(prompt,{on_chunk: chunk => ...})'
     },
     provider_behavior:{
       local_first:true,
@@ -3469,7 +3659,9 @@ async function registerWebMcpTools(){const mc=document.modelContext,status=$('#a
     {name:'oim_add_endpoint',description:'Add and probe an OpenAI-compatible or Ollama endpoint. API key remains local to this page.',inputSchema:{type:'object',properties:{url:{type:'string'},label:{type:'string'},api_key:{type:'string'}},required:['url']},annotations:{readOnlyHint:false},execute:async args=>JSON.stringify(await oimCall('add_endpoint',args))},
     {name:'oim_join_mesh',description:'Join enabled WebRTC discovery planes and NKN fallback overlay.',inputSchema:{type:'object',properties:{}},annotations:{readOnlyHint:false},execute:async()=>JSON.stringify(await oimCall('join_mesh'))},
     {name:'oim_leave_mesh',description:'Leave public mesh. Local inference remains available.',inputSchema:{type:'object',properties:{}},annotations:{readOnlyHint:false},execute:async()=>JSON.stringify(await oimCall('leave_mesh'))},
-    {name:'oim_run_inference',description:'Run text inference. AUTO prefers locally owned inference then mesh. No arbitrary shell/tool execution.',inputSchema:{type:'object',properties:{prompt:{type:'string'},model:{type:'string'},route:{type:'string',enum:['auto','local','mesh']},provider_node:{type:'string'},max_tokens:{type:'integer',minimum:1,maximum:65536},temperature:{type:'number',minimum:0,maximum:2}},required:['prompt']},annotations:{readOnlyHint:false,untrustedContentHint:true},execute:async args=>JSON.stringify(await oimCall('run_inference',args))},
+    {name:'oim_run_inference',description:'Run text inference. AUTO prefers locally owned inference then mesh. No arbitrary shell/tool execution.',inputSchema:{type:'object',properties:{prompt:{type:'string'},model:{type:'string'},route:{type:'string',enum:['auto','local','mesh']},provider_node:{type:'string'},max_tokens:{type:'integer',minimum:1,maximum:65536},temperature:{type:'number',minimum:0,maximum:2},
+        response_mode:{type:'string',enum:['stream','chunked'],description:'stream is default; chunked emits larger buffered frames'},
+        chunk_size:{type:'integer',minimum:32,maximum:4096,description:'target characters per chunk in chunked mode'}},required:['prompt']},annotations:{readOnlyHint:false,untrustedContentHint:true},execute:async args=>JSON.stringify(await oimCall('run_inference',args))},
     {name:'oim_accept_peer',description:'Accept a discovered signed peer and enable inference access for it.',inputSchema:{type:'object',properties:{node:{type:'string'}},required:['node']},annotations:{readOnlyHint:false},execute:async args=>JSON.stringify(await oimCall('accept_peer',args))},
     {name:'oim_deny_peer',description:'Deny a signed peer. Denied peers cannot consume this provider and are hidden from remote model routing.',inputSchema:{type:'object',properties:{node:{type:'string'}},required:['node']},annotations:{readOnlyHint:false},execute:async args=>JSON.stringify(await oimCall('deny_peer',args))},
     {name:'oim_set_peer_enabled',description:'Enable or disable inference for an already accepted peer without forgetting the trust decision.',inputSchema:{type:'object',properties:{node:{type:'string'},enabled:{type:'boolean'}},required:['node','enabled']},annotations:{readOnlyHint:false},execute:async args=>JSON.stringify(await oimCall('set_peer_enabled',args))},
@@ -3510,6 +3702,14 @@ $('#agentPublicToggle').onclick=()=>{
   toggleButton($('#agentPublicToggle'),state.agentPublicAccess);
   persistPolicy();scheduleAnnounce();updateShareSummary();
   log('info',`Public agent gateway ${state.agentPublicAccess?'enabled':'disabled'}.`);
+};
+$('#responseModeSelect').onchange=()=>{
+  state.responseMode=$('#responseModeSelect').value==='chunked'?'chunked':'stream';
+  persistPolicy();
+};
+$('#responseChunkSize').onchange=()=>{
+  state.responseChunkSize=clamp(Number($('#responseChunkSize').value)||CONFIG.defaultChunkSize,32,4096);
+  persistPolicy();
 };
 $('#advertiseToggle').onclick=()=>{
   state.advertise=!state.advertise;toggleButton($('#advertiseToggle'),state.advertise);persistPolicy();scheduleAnnounce();
@@ -3694,10 +3894,12 @@ async function handleQueryApi(qp){
       const provider_node=qp.get('provider')||null;
       const max_tokens=clamp(Number(qp.get('max_tokens'))||CONFIG.defaultMaxTokens,1,65536);
       const temperature=clamp(Number(qp.get('temperature'))||0.7,0,2);
+      const response_mode=qp.get('response_mode')==='chunked'?'chunked':'stream';
+      const chunk_size=clamp(Number(qp.get('chunk_size'))||CONFIG.defaultChunkSize,32,4096);
       if(!state.joined&&route!=='local')await joinMesh();
       const ready=await waitForAgentRoute(model,route,Number(qp.get('wait_ms'))||30000);
       if(!ready)return setApiResponse({ok:false,error:'No usable local or agent-open mesh route became available before timeout',route,model},503);
-      const result=await agentRunInference({prompt,model,route,provider_node,max_tokens,temperature});
+      const result=await agentRunInference({prompt,model,route,provider_node,max_tokens,temperature,response_mode,chunk_size});
       return setApiResponse({ok:true,result});
     }
     return setApiResponse({ok:false,error:`unknown api action: ${action}`,docs:agentApiDocs().url_api},400);
