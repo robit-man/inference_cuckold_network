@@ -7,7 +7,7 @@
 <meta name="description" content="Open Inference Mesh: a static-hostable, local-first peer-to-peer intelligence commons. People and agents can discover shared inference, use it within provider limits, and voluntarily contribute locally owned models so useful machine intelligence becomes broadly accessible rather than dependent on a single institution.">
 <meta name="robots" content="index,follow">
 <meta name="application-name" content="Open Inference Mesh">
-<meta name="oim-protocol" content="open-inference-mesh-v7.21">
+<meta name="oim-protocol" content="open-inference-mesh-v7.22">
 <meta name="agent-interface" content="WebMCP, window.OIM, same-origin postMessage RPC, CustomEvent RPC">
 <link rel="help" href="?api=docs" title="Open Inference Mesh machine API documentation">
 <link rel="alternate" type="application/json" href="?api=docs" title="OIM agent API">
@@ -3013,7 +3013,9 @@ async function probeEndpoint(url, label='manual', apiKey=''){
   renderEndpoints(); refreshModelSelect(); updateStats();
   log('ok',`Inference endpoint online: ${url} · ${models.length} model(s) · ${latency}ms`);
   if(models.length){
-    await probeEndpointCapabilities(ep).catch(()=>{});
+    // Metadata probes are cheap model-list/show calls. Capability probing is
+    // intentionally NOT automatic: it performs real chat completions and can
+    // load/evict large models, blocking actual inference.
     await probeEndpointModelMetadata(ep).catch(e=>log('warn',`Model metadata probe ${ep.label}: ${e.message}`));
   }
   scheduleAnnounce();
@@ -4951,7 +4953,11 @@ async function executeRemoteJob(job){
     const responseMode=data.response_mode==='chunked'?'chunked':'stream';
     const chunkSize=clamp(Number(data.chunk_size)||CONFIG.defaultChunkSize,32,4096);
     let seq=0,reasoningProgressAt=0;
-    let completion;
+    let completion,firstContentAt=0;
+    sendJobState(wrapper,peerId,data.id,'backend-start',{
+      model:auth.match.model,
+      endpoint_label:auth.match.label||'local'
+    });
     try{
       completion=await callLocalProvider(auth.match,auth.messages,{
         temperature:clamp(Number(data.temperature)||0.7,0,2),
@@ -4960,6 +4966,13 @@ async function executeRemoteJob(job){
         reasoning_mode:reasoningModeForRequest(data.reasoning_mode||'auto'),
         response_mode:responseMode,chunk_size:chunkSize,
         on_delta:delta=>{
+          if(!firstContentAt){
+            firstContentAt=now();
+            sendJobState(wrapper,peerId,data.id,'streaming',{
+              model:auth.match.model,
+              ttft_ms:Math.max(0,Math.round(firstContentAt-t0))
+            });
+          }
           updateServingTelemetry(peerMeta.node,delta);
           sendJobDelta(wrapper,peerId,data.id,{delta,seq:seq++,mode:responseMode,kind:'content',ts:now()});
         },
@@ -5113,6 +5126,8 @@ function handleRemoteState(data,meta,wrapper){
     }
     if(data.status==='queued')log('info',`Remote job ${data.id.slice(0,8)} queued at position ${data.position||'?'}.`);
     if(data.status==='running')log('info',`Remote job ${data.id.slice(0,8)} is running.`);
+    if(data.status==='backend-start')log('info',`Remote job ${data.id.slice(0,8)} entered local backend · ${data.model||'model'}.`);
+    if(data.status==='streaming')log('ok',`Remote job ${data.id.slice(0,8)} first output · TTFT ${Number(data.ttft_ms)||0}ms.`);
     if(data.status==='compat-retry'){
       log('warn',`Remote job ${data.id.slice(0,8)} switched to known-good compatibility inference path.`);
     }
@@ -5139,8 +5154,8 @@ function handleRemoteState(data,meta,wrapper){
     peer.capacity=Number(data.capacity)||peer.capacity||0;
     peer.queue=Number(data.queued)||0;
     peer.maxQueue=Number(data.maxQueue)||peer.maxQueue||0;
-    peer.inferenceActive=data.status==='running'||data.status==='reasoning'||peer.load>0;
-    if(data.status==='running'||data.status==='reasoning'||data.status==='complete')peer.lastActivityAt=now();
+    peer.inferenceActive=['running','backend-start','reasoning','streaming'].includes(data.status)||peer.load>0;
+    if(['running','backend-start','reasoning','streaming','complete'].includes(data.status))peer.lastActivityAt=now();
   }
   renderPeers();renderStatePanel();
 }
@@ -5947,6 +5962,19 @@ function sanitizeInferenceMessages(messages,prompt=''){
   return out;
 }
 
+
+async function readerReadWithTimeout(reader,timeoutMs,label='stream read'){
+  let timer;
+  try{
+    return await Promise.race([
+      reader.read(),
+      new Promise((_,reject)=>{
+        timer=setTimeout(()=>reject(new Error(`${label} timeout after ${timeoutMs}ms`)),timeoutMs);
+      })
+    ]);
+  }finally{clearTimeout(timer)}
+}
+
 async function callOpenAI(endpointUrl,model,messages,extra={}){
   const ep=state.endpoints.get(endpointUrl);
   if(!ep||ep.status!=='up')throw new Error('endpoint is not online');
@@ -5956,10 +5984,11 @@ async function callOpenAI(endpointUrl,model,messages,extra={}){
   const requestedTools=sanitizeRemoteTools(extra.tools||[]);
   const reasoningMode=reasoningModeForRequest(extra.reasoning_mode??state.reasoningMode);
 
-  if((requestedTools.length||reasoningMode!=='auto')&&ep.models?.length){
-    try{await probeEndpointCapabilities(ep)}catch(_){}
-  }
-
+  // Never block a real inference request on synthetic capability probing.
+  // Use cached/reported capability metadata if available; unknown backends fall
+  // back to the prompt-tool protocol. Explicit probes remain available via UI.
+  // Synthetic capability probes are manual-only. They must never compete with
+  // user/mesh inference for model loading, VRAM, or the Ollama/vLLM scheduler.
   const nativeTools=!!ep.capabilities?.toolsNative;
   const headers={'Content-Type':'application/json','Accept':'text/event-stream, application/json'};
   if(ep.apiKey)headers['Authorization']=`Bearer ${ep.apiKey}`;
@@ -6082,10 +6111,21 @@ async function callOpenAI(endpointUrl,model,messages,extra={}){
     return false;
   };
 
-  let done=false;
+  let done=false,receivedStreamBytes=false;
   while(!done){
-    const part=await reader.read();
+    let part;
+    try{
+      part=await readerReadWithTimeout(
+        reader,
+        receivedStreamBytes?30000:30000,
+        receivedStreamBytes?'stream idle':'stream first-byte'
+      );
+    }catch(e){
+      try{await reader.cancel()}catch(_){}
+      throw e;
+    }
     if(part.done)break;
+    if(part.value?.byteLength)receivedStreamBytes=true;
     buffer+=decoder.decode(part.value,{stream:true});
     const lines=buffer.split(/\r?\n/);
     buffer=lines.pop()||'';
@@ -6182,7 +6222,7 @@ async function callOpenAILegacyCompat(endpointUrl,model,prompt,extra={}){
 }
 function shouldUseLegacyProviderFallback(err){
   const msg=String(err?.message||err||'').toLowerCase();
-  return /failed to fetch|local inference fetch failed|oim_local_fetch_failed|networkerror|network error|streaming response has no readable body|stream completed without text or tool calls/.test(msg);
+  return /failed to fetch|local inference fetch failed|oim_local_fetch_failed|networkerror|network error|streaming response has no readable body|stream completed without text or tool calls|stream first-byte timeout|stream idle timeout/.test(msg);
 }
 
 function routeTransportConnected(routeId){
@@ -7363,7 +7403,12 @@ const syncReasoningMode=v=>{
 };
 $('#reasoningModeSelect').onchange=()=>syncReasoningMode($('#reasoningModeSelect').value);
 $('#reasoningModeSide').onchange=()=>syncReasoningMode($('#reasoningModeSide').value);
-$('#probeCapsBtn').onclick=async()=>{const b=$('#probeCapsBtn');b.disabled=true;await probeAllEndpointCapabilities(true);b.disabled=false};
+$('#probeCapsBtn').onclick=async()=>{
+  const b=$('#probeCapsBtn');b.disabled=true;
+  log('warn','Running explicit capability probes; these perform tiny real inference requests and may load models.');
+  await probeAllEndpointCapabilities(true);
+  b.disabled=false;
+};
 $('#responseModeSelect').onchange=()=>{
   state.responseMode=$('#responseModeSelect').value==='chunked'?'chunked':'stream';
   persistPolicy();
