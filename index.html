@@ -7,7 +7,7 @@
 <meta name="description" content="Open Inference Mesh: a static-hostable, local-first peer-to-peer intelligence commons. People and agents can discover shared inference, use it within provider limits, and voluntarily contribute locally owned models so useful machine intelligence becomes broadly accessible rather than dependent on a single institution.">
 <meta name="robots" content="index,follow">
 <meta name="application-name" content="Open Inference Mesh">
-<meta name="oim-protocol" content="open-inference-mesh-v7.16">
+<meta name="oim-protocol" content="open-inference-mesh-v7.18">
 <meta name="agent-interface" content="WebMCP, window.OIM, same-origin postMessage RPC, CustomEvent RPC">
 <link rel="help" href="?api=docs" title="Open Inference Mesh machine API documentation">
 <link rel="alternate" type="application/json" href="?api=docs" title="OIM agent API">
@@ -1280,6 +1280,11 @@ const state = {
   nknLogGate: new Map(),
   nknSendChains: new Map(),
   nknTxStats:{messages:0,chunks:0,deltaFrames:0,deltaChars:0},
+  streamDiag:{txDeltas:0,txChars:0,rxDeltas:0,rxChars:0,lastTxAt:0,lastRxAt:0},
+  lanPermission:{
+    autoAttempted:false,gestureRetryArmed:false,inFlight:null,lastAttemptAt:0,
+    loopback:'unknown',local:'unknown'
+  },
   natsEnabled: true,
   natsTargetPeers: 12,
   natsReservoirSize: 384,
@@ -1351,6 +1356,8 @@ const state = {
   meritVerified:new Map(),
   meritProofCache:new Map(),
   meritReceiptLimit:2048,
+  providerEarned:new Map(),    // job_id -> provisional local seed merit until countersigned
+  providerEarnedLimit:2048,
   bootstrapDailyLimit:1000,
   bootstrapRpmLimit:10,
   peerBootstrapUsage:new Map(), // provider-side durable usage per stable NodeID
@@ -1563,7 +1570,9 @@ async function loadMeritLedger(){
     const v=await verifyMeritReceipt(r).catch(()=>null);
     if(v)state.meritReceipts.set(v.id,v);
   }
-  persistMeritLedger();renderMerit();
+  persistMeritLedger();
+  loadProviderEarned();
+  renderMerit();
 }
 async function recordMeritReceipt(receipt,{persist=true}={}){
   const v=await verifyMeritReceipt(receipt).catch(()=>null);if(!v)return null;
@@ -1577,6 +1586,62 @@ async function recordMeritReceipt(receipt,{persist=true}={}){
   renderMerit();scheduleAnnounce();
   return v;
 }
+
+function loadProviderEarned(){
+  try{
+    const rows=JSON.parse(localStorage.getItem('oim.merit.provider-earned.v1')||'[]');
+    state.providerEarned=new Map(
+      (Array.isArray(rows)?rows:[]).slice(-state.providerEarnedLimit).map(x=>[String(x.job_id||''),x]).filter(([k])=>k)
+    );
+  }catch(_){state.providerEarned=new Map()}
+}
+function persistProviderEarned(){
+  try{
+    const rows=[...state.providerEarned.values()]
+      .sort((a,b)=>(a.ts||0)-(b.ts||0))
+      .slice(-state.providerEarnedLimit);
+    localStorage.setItem('oim.merit.provider-earned.v1',JSON.stringify(rows));
+  }catch(_){}
+}
+function recordProviderEarned({job_id,requester,model,tokens,units,tps=0,ts=now()}={}){
+  job_id=String(job_id||'');if(!job_id)return null;
+  const old=state.providerEarned.get(job_id);
+  if(old)return old;
+  const rec={
+    job_id,requester:String(requester||''),model:String(model||'unknown'),
+    tokens:Math.max(0,Math.round(Number(tokens)||0)),
+    units:Math.max(0,Math.round(Number(units)||0)),
+    tps:Math.max(0,Number(tps)||0),ts:Number(ts)||now(),acked:false
+  };
+  state.providerEarned.set(job_id,rec);
+  if(state.providerEarned.size>state.providerEarnedLimit){
+    const rows=[...state.providerEarned.values()].sort((a,b)=>(b.ts||0)-(a.ts||0)).slice(0,state.providerEarnedLimit);
+    state.providerEarned=new Map(rows.map(x=>[x.job_id,x]));
+  }
+  persistProviderEarned();renderMerit();
+  return rec;
+}
+function acknowledgeProviderEarned(jobId){
+  const rec=state.providerEarned.get(String(jobId||''));
+  if(!rec||rec.acked)return rec||null;
+  rec.acked=true;rec.acked_at=now();
+  state.providerEarned.set(rec.job_id,rec);
+  persistProviderEarned();renderMerit();
+  return rec;
+}
+function providerEarnedSummary(){
+  let pending=0,confirmed=0,pendingJobs=0,confirmedJobs=0;
+  for(const x of state.providerEarned.values()){
+    if(x.acked){confirmed+=Number(x.units)||0;confirmedJobs++}
+    else{pending+=Number(x.units)||0;pendingJobs++}
+  }
+  return {
+    pending_units:Math.round(pending),confirmed_service_units:Math.round(confirmed),
+    pending_jobs:pendingJobs,confirmed_jobs:confirmedJobs,
+    total_service_units:Math.round(pending+confirmed)
+  };
+}
+
 function meritSummaryFor(node=state.nodeId,receipts=[...state.meritReceipts.values()]){
   let seed=0,leech=0,seedTokens=0,leechTokens=0;const seedJobs=new Set(),leechJobs=new Set();
   for(const r of receipts){
@@ -1660,7 +1725,9 @@ function estimateMeritReservation(model,provider,messages,maxTokens){
 }
 function renderMerit(){
   const summary=meritSummaryFor(state.nodeId);
-  if($('#meritPill'))setPill('#meritPill',summary.balance_units>0?'good':summary.leech_units>summary.seed_units?'warn':'',`<strong>MERIT</strong> ${formatMerit(summary.balance_units)}`);
+  const earned=providerEarnedSummary();
+  const displayedSeed=Math.max(Number(summary.seed_units)||0,Number(earned.confirmed_service_units)||0);
+  if($('#meritPill'))setPill('#meritPill',(summary.balance_units>0||earned.pending_units>0)?'good':summary.leech_units>summary.seed_units?'warn':'',`<strong>MERIT</strong> ${formatMerit(summary.balance_units)}${earned.pending_units?` · +${formatMerit(earned.pending_units)} pending`:''}`);
   if($('#meritAddress'))$('#meritAddress').value=state.nodeId||'';
   const box=$('#meritSummary');
   const quota=meshQuotaSnapshot();
@@ -1668,7 +1735,9 @@ function renderMerit(){
     <div class="merit-stat good"><b id="meshQuotaDaily">${quota.daily_used.toLocaleString()} / ${quota.daily_limit.toLocaleString()}</b><span>free mesh requests · rolling 24h</span></div>
     <div class="merit-stat"><b id="meshQuotaMinute">${quota.minute_used} / ${quota.minute_limit}</b><span>requests this minute</span></div>
     <div class="merit-stat ${quota.cooldown_ms?'warn':'good'}"><b id="meshQuotaCooldown">${quota.cooldown_ms?`cooldown ${quotaCooldownText(quota.cooldown_ms)}`:`${quota.daily_remaining} free today`}</b><span>bootstrap access</span></div>
-    <div class="merit-stat good"><b>${formatMerit(summary.seed_units)}</b><span>seeded merit</span></div>
+    <div class="merit-stat good"><b>${formatMerit(summary.seed_units)}</b><span>verified seeded merit</span></div>
+    <div class="merit-stat good"><b>${formatMerit(earned.pending_units)}</b><span>provider merit earned · awaiting peer confirmation</span></div>
+    <div class="merit-stat"><b>${earned.pending_jobs}</b><span>served jobs awaiting countersignature</span></div>
     <div class="merit-stat warn"><b>${formatMerit(summary.leech_units)}</b><span>leeched merit</span></div>
     <div class="merit-stat ${summary.balance_units>0?'good':'warn'}"><b>${formatMerit(summary.leech_budget)}</b><span>available leech budget</span></div>
     <div class="merit-stat"><b>${meritRatioText(summary.seed_units,summary.leech_units)}</b><span>seed / leech ratio</span></div>
@@ -1739,8 +1808,9 @@ async function handleMeritMessage(data,meta,wrapper){
   };
   const accepted={...receipt,ack:{...ackBody,sig:await signObject(ackBody)}};
   await recordMeritReceipt(accepted);
+  acknowledgeProviderEarned(receipt.job_id);
   await wrapper.actions.merit.send({type:'acceptance',receipt:accepted},{target:meta.peerId}).catch(()=>{});
-  log('ok',`Merit +${formatMerit(accepted.units)} from seeded ${accepted.model}.`);
+  log('ok',`Merit +${formatMerit(accepted.units)} confirmed from seeded ${accepted.model}.`);
 }
 
 async function initIdentity(){
@@ -1808,6 +1878,10 @@ function loadPolicy(){
       state.rpmLimit=10;
       localStorage.setItem('oim.bootstrapQuotaV1','1');
       setTimeout(()=>persistPolicy(),0);
+    }
+    if(localStorage.getItem('oim.toolProbeV717')!=='1'){
+      localStorage.removeItem('oim.endpointCaps');
+      localStorage.setItem('oim.toolProbeV717','1');
     }
   }catch(e){log('warn','Could not restore one or more persisted mesh settings.')}
 }
@@ -1906,56 +1980,150 @@ function setPill(id, mode, html){
   const el=$(id); el.className='pill '+(mode||''); el.innerHTML=html;
 }
 
+async function readLanPermissionStates(){
+  const states={loopback:'unknown',local:'unknown',alias:'unknown'};
+  if(!window.isSecureContext||!navigator.permissions?.query)return states;
+
+  for(const [name,key] of [
+    ['loopback-network','loopback'],
+    ['local-network','local'],
+    ['local-network-access','alias']
+  ]){
+    try{
+      const p=await navigator.permissions.query({name});
+      states[key]=p.state||'unknown';
+      p.onchange=()=>setTimeout(()=>checkPermissions(),0);
+    }catch(_){}
+  }
+
+  if(states.loopback==='unknown'&&states.alias!=='unknown')states.loopback=states.alias;
+  if(states.local==='unknown'&&states.alias!=='unknown')states.local=states.alias;
+  return states;
+}
 async function checkPermissions(){
   if(!window.isSecureContext){
     $('#permDetail').textContent='not a secure context — host this file over HTTPS';
     setPill('#lnaPill','bad','<strong>LAN</strong> HTTPS REQUIRED');
-    return;
+    state.lanPermission.loopback='denied';
+    state.lanPermission.local='denied';
+    return {loopback:'denied',local:'denied'};
   }
-  if(!navigator.permissions?.query){
-    $('#permDetail').textContent='Permissions API unavailable; access will be tested directly';
-    setPill('#lnaPill','warn','<strong>LAN</strong> UNKNOWN');
-    return;
-  }
+
+  const states=await readLanPermissionStates();
+  state.lanPermission.loopback=states.loopback;
+  state.lanPermission.local=states.local;
+
   const parts=[];
   let strongest='good';
-  for(const name of ['loopback-network','local-network']){
-    try{
-      const p=await navigator.permissions.query({name});
-      parts.push(`${name}: ${p.state}`);
-      if(p.state==='denied') strongest='bad';
-      else if(p.state==='prompt' && strongest!=='bad') strongest='warn';
-      p.onchange=checkPermissions;
-    }catch(e){
-      parts.push(`${name}: unsupported`);
-      if(strongest==='good') strongest='warn';
-    }
+  for(const [label,value] of [['loopback',states.loopback],['local',states.local]]){
+    parts.push(`${label}: ${value}`);
+    if(value==='denied')strongest='bad';
+    else if((value==='prompt'||value==='unknown')&&strongest!=='bad')strongest='warn';
   }
-  $('#permDetail').textContent=parts.join(' · ');
-  setPill('#lnaPill', strongest, `<strong>LAN</strong> ${esc(parts.join(' / '))}`);
-}
 
-async function requestLanPermission(){
-  if(!window.isSecureContext){
-    log('err','Local Network Access requires HTTPS.');
-    return;
-  }
-  log('info','Requesting local-network permission with a benign connection attempt…');
-  // Chromium's LNA prompt is request-triggered, not a navigator.permissions.request() API.
-  // This intentionally targets a highly unlikely private endpoint and ignores network failure.
+  $('#permDetail').textContent=parts.join(' · ');
+  setPill('#lnaPill',strongest,`<strong>LAN</strong> ${esc(parts.join(' / '))}`);
+  return states;
+}
+async function triggerAddressSpacePermission(url,addressSpace,timeoutMs=2600){
   const ctrl=new AbortController();
-  const timer=setTimeout(()=>ctrl.abort(),2500);
+  const timer=setTimeout(()=>ctrl.abort(),timeoutMs);
   try{
-    await fetch('http://10.255.255.254:65535/__oim_permission_probe__',{
+    await fetch(url,{
+      method:'GET',
       mode:'no-cors',
       cache:'no-store',
       signal:ctrl.signal,
-      targetAddressSpace:'local'
+      targetAddressSpace:addressSpace
     });
   }catch(_){}
-  clearTimeout(timer);
-  await checkPermissions();
-  log('ok','Permission request completed; now add/scan your actual inference endpoint.');
+  finally{clearTimeout(timer)}
+}
+function armLanPermissionGestureRetry(){
+  if(state.lanPermission.gestureRetryArmed)return;
+  state.lanPermission.gestureRetryArmed=true;
+  const retry=async()=>{
+    state.lanPermission.gestureRetryArmed=false;
+    for(const type of ['pointerdown','keydown','touchstart'])window.removeEventListener(type,retry,true);
+    const states=await checkPermissions();
+    if(
+      states.loopback==='prompt'||states.local==='prompt'||
+      states.loopback==='unknown'||states.local==='unknown'
+    ){
+      requestLanPermission({automatic:true,fromGesture:true}).catch(()=>{});
+    }
+  };
+  for(const type of ['pointerdown','keydown','touchstart']){
+    window.addEventListener(type,retry,{capture:true,once:true});
+  }
+}
+async function requestLanPermission({automatic=false,fromGesture=false,force=false}={}){
+  if(!window.isSecureContext){
+    if(!automatic)log('err','Local Network Access requires HTTPS.');
+    return {loopback:'denied',local:'denied'};
+  }
+  if(state.lanPermission.inFlight)return state.lanPermission.inFlight;
+
+  const t=now();
+  if(!force&&t-state.lanPermission.lastAttemptAt<1500)return checkPermissions();
+  state.lanPermission.lastAttemptAt=t;
+  if(automatic)state.lanPermission.autoAttempted=true;
+
+  state.lanPermission.inFlight=(async()=>{
+    const before=await checkPermissions();
+    const needLoopback=force||before.loopback==='prompt'||before.loopback==='unknown';
+    const needLocal=force||before.local==='prompt'||before.local==='unknown';
+
+    if(!needLoopback&&!needLocal)return before;
+    if(!automatic||fromGesture){
+      log('info',`Requesting Local Network Access${fromGesture?' from user gesture':''}…`);
+    }
+
+    // Real conventional Ollama endpoint: when present, the permission probe can
+    // also warm the endpoint connection. The browser prompt is request-triggered.
+    if(needLoopback){
+      await triggerAddressSpacePermission(
+        'http://127.0.0.1:11434/api/tags',
+        'loopback',
+        3000
+      );
+    }
+
+    const mid=await checkPermissions();
+    if(needLocal&&(mid.local==='prompt'||mid.local==='unknown')){
+      await triggerAddressSpacePermission(
+        'http://192.168.255.254:9/__oim_lna_permission_probe__',
+        'local',
+        1800
+      );
+    }
+
+    const after=await checkPermissions();
+    if(
+      automatic&&!fromGesture&&
+      (after.loopback==='prompt'||after.local==='prompt'||
+       after.loopback==='unknown'||after.local==='unknown')
+    )armLanPermissionGestureRetry();
+
+    if(!automatic){
+      if(after.loopback==='granted'||after.local==='granted'){
+        log('ok','Local Network Access granted.');
+      }else if(after.loopback==='denied'||after.local==='denied'){
+        log('warn','Local Network Access denied; local inference endpoints cannot be reached until this site permission changes.');
+      }else{
+        log('info','Local Network Access request issued; browser permission remains pending/unsupported.');
+      }
+    }
+    return after;
+  })().finally(()=>{state.lanPermission.inFlight=null});
+
+  return state.lanPermission.inFlight;
+}
+async function autoRequestLanPermission(){
+  if(state.lanPermission.autoAttempted)return checkPermissions();
+  const states=await checkPermissions();
+  if(states.loopback==='granted'&&states.local==='granted')return states;
+  return requestLanPermission({automatic:true});
 }
 
 
@@ -2579,7 +2747,13 @@ async function probeEndpointCapabilities(ep,{force=false}={}){
     ep.capabilities={status:'probing',toolsNative:false,reasoningStyle:'server'};renderEndpoints();
     const base={model,messages:[{role:'user',content:'Reply OK.'}],stream:false,max_tokens:1,temperature:0};
     try{
-      ep.capabilities.toolsNative=await probeCapabilityRequest(ep,{...base,tools:[{type:'function',function:{name:'oim_probe',description:'Capability probe only.',parameters:{type:'object',properties:{},additionalProperties:false}}}],tool_choice:'none'});
+      const probeTool={type:'function',function:{name:'oim_probe',description:'Capability probe only.',parameters:{type:'object',properties:{},additionalProperties:false}}};
+      // Servers differ on tool_choice support. Accept native tools if either
+      // plain tools or tools+auto is accepted; do not misclassify a backend
+      // merely because it rejects tool_choice:'none'.
+      ep.capabilities.toolsNative=
+        await probeCapabilityRequest(ep,{...base,tools:[probeTool]}) ||
+        await probeCapabilityRequest(ep,{...base,tools:[probeTool],tool_choice:'auto'});
     }catch(_){ep.capabilities.toolsNative=false}
     try{
       if(await probeCapabilityRequest(ep,{...base,reasoning_effort:'none'}))ep.capabilities.reasoningStyle='reasoning_effort';
@@ -2620,10 +2794,29 @@ function fetchOptsFor(url, extra={}){
 }
 
 async function fetchTimeout(url, opts={}, timeout=4500){
+  const {__oimLanRetried=false,...fetchOpts}=opts||{};
   const ctrl=new AbortController();
   const t=setTimeout(()=>ctrl.abort(),timeout);
   try{
-    return await fetch(url,{...opts,signal:ctrl.signal});
+    return await fetch(url,{...fetchOpts,signal:ctrl.signal});
+  }catch(e){
+    const space=addressSpaceFor(url);
+    if(space&&!__oimLanRetried&&window.isSecureContext){
+      // "Failed to fetch" on a public HTTPS page talking to localhost/private
+      // space is frequently an LNA permission transition. Trigger permission
+      // and retry the actual request once.
+      await requestLanPermission({automatic:true}).catch(()=>{});
+      await sleep(120);
+      return fetchTimeout(url,{...fetchOpts,__oimLanRetried:true},timeout);
+    }
+    if(space){
+      const states=await checkPermissions().catch(()=>({loopback:'unknown',local:'unknown'}));
+      const permission=space==='loopback'?states.loopback:states.local;
+      const err=new Error(`local inference fetch failed (${space} permission ${permission}): ${String(e?.message||e)}`);
+      err.cause=e;err.code='OIM_LOCAL_FETCH_FAILED';err.addressSpace=space;err.permission=permission;
+      throw err;
+    }
+    throw e;
   }finally{clearTimeout(t)}
 }
 
@@ -4421,24 +4614,29 @@ async function authorizeRemoteJob(peerMeta,data){
   // without pre-existing merit. This removes the seed/leech catch-22.
   const bootstrapFree=quota.daily_used<state.bootstrapDailyLimit;
 
-  // During free bootstrap access, any non-denied signed identity may request
-  // inference. After the free allowance, normal access policy + reciprocity apply.
+  // Zero merit is never an admission gate. Every signed, non-denied identity
+  // receives the baseline 1000/24h + 10 RPM service tier. Merit only extends
+  // usage beyond that baseline.
+  let meritExtended=false;
   if(!bootstrapFree){
-    if(state.meritEnabled&&!peerMeta.share){
-      return {ok:false,error:'free mesh allowance used; continued reciprocity requires this node to share inference',quota};
-    }
-    if(state.accessMode==='capability'&&!publicAgent&&!grant&&!nodeIsEnabled(peerMeta.node)){
-      return {ok:false,error:'free mesh allowance used; peer must be accepted/enabled or present a capability grant',quota};
-    }
-    if(state.accessMode==='allowlist'&&!publicAgent&&!state.allowlist.has(peerMeta.node)&&!grant){
-      return {ok:false,error:'free mesh allowance used; identity is not allowlisted and no valid grant supplied',quota};
-    }
-    if(state.meritEnabled&&(!meritProof.valid||meritProof.leech_budget<meritReserve)){
+    if(state.meritEnabled&&meritProof.valid&&meritProof.leech_budget>=meritReserve){
+      meritExtended=true;
+    }else{
       return {
         ok:false,
-        error:`free mesh allowance used and merit budget insufficient: need ~${formatMerit(meritReserve)}, verified budget ${formatMerit(meritProof.leech_budget||0)}; seed inference to continue`,
-        meritRequired:meritReserve,meritBudget:meritProof.leech_budget||0,quota
+        error:`baseline mesh rate limit reached: ${quota.daily_used}/${quota.daily_limit} requests in rolling 24h`,
+        retryAfterMs:quota.daily_reset_ms||60_000,
+        rateLimited:true,quota,
+        meritRequired:meritReserve,meritBudget:meritProof.leech_budget||0
       };
+    }
+
+    // Explicit operator access policies still apply to above-baseline merit usage.
+    if(state.accessMode==='capability'&&!publicAgent&&!grant&&!nodeIsEnabled(peerMeta.node)){
+      return {ok:false,error:'above-baseline merit usage requires accepted/enabled peer or capability grant',quota};
+    }
+    if(state.accessMode==='allowlist'&&!publicAgent&&!state.allowlist.has(peerMeta.node)&&!grant){
+      return {ok:false,error:'above-baseline merit usage requires allowlist membership or capability grant',quota};
     }
   }
 
@@ -4452,7 +4650,7 @@ async function authorizeRemoteJob(peerMeta,data){
 
   return {
     ok:true,match,prompt,messages,tools,maxTokens:finalMax,estTokens:finalEst,
-    grant,concurrent,meritProof,meritReserve,bootstrapFree,quota
+    grant,concurrent,meritProof,meritReserve,bootstrapFree,meritExtended,quota
   };
 }
 
@@ -4487,6 +4685,9 @@ function sendJobState(wrapper,peerId,id,status,extra={}){
 }
 function sendJobDelta(wrapper,peerId,id,payload){
   registerJobWatcher(id,wrapper,peerId);
+  state.streamDiag.txDeltas++;
+  state.streamDiag.txChars+=String(payload?.delta||'').length;
+  state.streamDiag.lastTxAt=now();
   const targets=replayTargets(id);
   // Never block model generation on stale/reconnecting replay routes.
   for(const t of targets){
@@ -4575,7 +4776,7 @@ async function executeRemoteJob(job){
   try{
     const responseMode=data.response_mode==='chunked'?'chunked':'stream';
     const chunkSize=clamp(Number(data.chunk_size)||CONFIG.defaultChunkSize,32,4096);
-    let seq=0;
+    let seq=0,reasoningProgressAt=0;
     const completion=await callLocalProvider(auth.match,auth.messages,{
       temperature:clamp(Number(data.temperature)||0.7,0,2),
       max_tokens:auth.maxTokens,return_meta:true,
@@ -4583,7 +4784,19 @@ async function executeRemoteJob(job){
       reasoning_mode:reasoningModeForRequest(data.reasoning_mode||'auto'),
       response_mode:responseMode,chunk_size:chunkSize,
       on_delta:delta=>{
-        sendJobDelta(wrapper,peerId,data.id,{delta,seq:seq++,mode:responseMode,ts:now()});
+        sendJobDelta(wrapper,peerId,data.id,{delta,seq:seq++,mode:responseMode,kind:'content',ts:now()});
+      },
+      on_reasoning_delta:(delta,full)=>{
+        // Qwen/DeepSeek-style reasoning may precede visible answer content.
+        // Report liveness at most ~1.3 Hz; never one control packet per token.
+        const t=now();
+        if(t-reasoningProgressAt>=750){
+          reasoningProgressAt=t;
+          sendJobState(wrapper,peerId,data.id,'reasoning',{
+            reasoning_chars:String(full||'').length,
+            reasoning_delta_chars:String(delta||'').length
+          });
+        }
       }
     });
     const latencyMs=Math.max(1,Math.round(performance.now()-t0));
@@ -4595,6 +4808,10 @@ async function executeRemoteJob(job){
       job_id:data.id,model:auth.match.model,tokens:totalWorkTokens,tps:sampleTps,latency_ms:latencyMs,caps:auth.match.capabilities||{}
     });
     await recordMeritReceipt(meritCharge);
+    recordProviderEarned({
+      job_id:data.id,requester:peerMeta.node,model:auth.match.model,
+      tokens:totalWorkTokens,units:meritCharge.units,tps:sampleTps
+    });
     await sendJobResult(wrapper,peerId,{
       id:data.id,ok:true,text:completion.text,model:auth.match.model,node:state.nodeId,
       latency_ms:latencyMs,
@@ -4673,6 +4890,13 @@ function handleRemoteState(data,meta,wrapper){
     p.lastStateAt=now();
     if(data.status==='queued')log('info',`Remote job ${data.id.slice(0,8)} queued at position ${data.position||'?'}.`);
     if(data.status==='running')log('info',`Remote job ${data.id.slice(0,8)} is running.`);
+    if(data.status==='reasoning'){
+      p.reasoningChars=Number(data.reasoning_chars)||p.reasoningChars||0;
+      if(now()-Number(p.lastReasoningLogAt||0)>5000){
+        p.lastReasoningLogAt=now();
+        log('info',`Remote job ${data.id.slice(0,8)} reasoning · ${p.reasoningChars} chars received upstream.`);
+      }
+    }
     if(data.status==='rejected'&&data.error){
       const err=new Error(String(data.error));
       err.retryAfterMs=Number(data.retryAfterMs)||0;
@@ -4689,8 +4913,8 @@ function handleRemoteState(data,meta,wrapper){
     peer.capacity=Number(data.capacity)||peer.capacity||0;
     peer.queue=Number(data.queued)||0;
     peer.maxQueue=Number(data.maxQueue)||peer.maxQueue||0;
-    peer.inferenceActive=data.status==='running'||peer.load>0;
-    if(data.status==='running'||data.status==='complete')peer.lastActivityAt=now();
+    peer.inferenceActive=data.status==='running'||data.status==='reasoning'||peer.load>0;
+    if(data.status==='running'||data.status==='reasoning'||data.status==='complete')peer.lastActivityAt=now();
   }
   renderPeers();renderStatePanel();
 }
@@ -4723,6 +4947,9 @@ function handleInferenceDelta(data,meta,wrapper){
   if(pending.providerNode&&sourceNode&&sourceNode!==pending.providerNode)return;
   pending.streamText=(pending.streamText||'')+data.delta;
   pending.lastDeltaAt=now();
+  state.streamDiag.rxDeltas++;
+  state.streamDiag.rxChars+=data.delta.length;
+  state.streamDiag.lastRxAt=now();
   if(typeof pending.onDelta==='function'){
     try{pending.onDelta(data.delta,pending.streamText,{mode:data.mode||'stream',seq:Number(data.seq)||0,peerId:meta.peerId})}catch(_){}
   }
@@ -5128,6 +5355,7 @@ function renderStatePanel(){
     <div class="statline"><span>routing</span><span>AUTO BALANCED · capability + health weighted</span></div>
     <div class="statline"><span>model scope</span><span>${esc(state.serveModels)}</span></div>
     <div class="statline"><span>mesh models</span><span>${remoteModels().length} routeable model advertisement(s)</span></div>
+    <div class="statline"><span>stream I/O</span><span>TX ${state.streamDiag.txDeltas}/${state.streamDiag.txChars}c · RX ${state.streamDiag.rxDeltas}/${state.streamDiag.rxChars}c</span></div>
     <div class="statline"><span>NATS rendezvous</span><span>${esc(state.nats.status)} · ${state.nats.connections.size} fabric(s) · ${state.nats.candidates.size} candidates</span></div>
     <div class="statline"><span>NKN overlay</span><span>${esc(state.nkn.status)}${state.nkn.addr?' · '+esc(state.nkn.addr).slice(0,22)+'…':''}</span></div>
     <div class="statline"><span>max output</span><span>${state.maxRemoteTokens} tokens · ${state.queueTimeoutSec}s queue TTL</span></div>`;
@@ -5350,6 +5578,79 @@ Do not invent tool names. The browser executes the tool and returns <tool_result
 AVAILABLE TOOLS:
 ${JSON.stringify(compact)}`;
 }
+
+function createFallbackStreamFilter(onVisible){
+  let hold='',toolDepth=0,toolBuffer='';
+  const open='<tool_call>',close='</tool_call>';
+  const keepTail=Math.max(open.length,close.length)-1;
+
+  const emitVisible=async text=>{
+    if(!text)return;
+    await onVisible(text);
+  };
+
+  const push=async chunk=>{
+    hold+=String(chunk||'');
+    while(hold){
+      if(toolDepth){
+        const end=hold.indexOf(close);
+        if(end<0){
+          // Keep only enough tail to detect a split closing tag.
+          const safe=Math.max(0,hold.length-keepTail);
+          if(safe){
+            toolBuffer+=hold.slice(0,safe);
+            hold=hold.slice(safe);
+          }
+          break;
+        }
+        toolBuffer+=hold.slice(0,end);
+        hold=hold.slice(end+close.length);
+        toolDepth=0;
+        continue;
+      }
+
+      const start=hold.indexOf(open);
+      if(start>=0){
+        if(start)await emitVisible(hold.slice(0,start));
+        hold=hold.slice(start+open.length);
+        toolDepth=1;
+        continue;
+      }
+
+      // No full opening tag. Stream all except a tiny suffix that could be the
+      // prefix of a tag split across SSE chunks.
+      let tail=0;
+      const max=Math.min(keepTail,hold.length);
+      for(let n=max;n>0;n--){
+        if(open.startsWith(hold.slice(-n))){tail=n;break}
+      }
+      const safe=hold.length-tail;
+      if(safe){
+        await emitVisible(hold.slice(0,safe));
+        hold=hold.slice(safe);
+      }
+      break;
+    }
+  };
+
+  const finish=async()=>{
+    if(!toolDepth&&hold){
+      await emitVisible(hold);
+      hold='';
+    }else if(toolDepth){
+      // Malformed/incomplete tool markup is retained for final parser but not
+      // leaked into user-visible streaming.
+      toolBuffer+=hold;hold='';
+    }
+  };
+
+  return {
+    push,finish,
+    get toolMarkup(){return toolBuffer},
+    get inTool(){return !!toolDepth}
+  };
+}
+
 function prepareFallbackToolMessages(messages,tools){
   const out=[{role:'system',content:fallbackToolSystemPrompt(tools)}];
   for(const m of messages){
@@ -5472,24 +5773,31 @@ async function callOpenAI(endpointUrl,model,messages,extra={}){
   if(!res.body)throw new Error('streaming response has no readable body');
   const reader=res.body.getReader();
   const decoder=new TextDecoder();
-  let buffer='',full='',usage=null,chunkBuffer='',reasoning='';
+  let buffer='',full='',visibleFull='',usage=null,chunkBuffer='',reasoning='';
   let completionTokens=0,promptTokens=0,totalTokens=0;
   const toolParts=new Map();
-  const suppressFallbackStream=requestedTools.length&&!nativeTools;
+  const fallbackTools=requestedTools.length&&!nativeTools;
 
-  const emit=async delta=>{
+  const emitVisible=async delta=>{
     if(!delta)return;
-    full+=delta;
-    if(suppressFallbackStream)return;
+    visibleFull+=delta;
     if(responseMode==='stream'){
-      if(extra.on_delta)await extra.on_delta(delta,full,{mode:'stream',final:false});
+      if(extra.on_delta)await extra.on_delta(delta,visibleFull,{mode:'stream',final:false,kind:'content'});
     }else{
       chunkBuffer+=delta;
       if(chunkBuffer.length>=chunkSize){
         const out=chunkBuffer;chunkBuffer='';
-        if(extra.on_delta)await extra.on_delta(out,full,{mode:'chunked',final:false});
+        if(extra.on_delta)await extra.on_delta(out,visibleFull,{mode:'chunked',final:false,kind:'content'});
       }
     }
+  };
+  const fallbackFilter=fallbackTools?createFallbackStreamFilter(emitVisible):null;
+
+  const emit=async delta=>{
+    if(!delta)return;
+    full+=delta;
+    if(fallbackFilter)await fallbackFilter.push(delta);
+    else await emitVisible(delta);
   };
   const ingestToolParts=parts=>{
     if(!Array.isArray(parts))return;
@@ -5517,7 +5825,12 @@ async function callOpenAI(endpointUrl,model,messages,extra={}){
     const deltaObj=choice.delta||choice.message||{};
     ingestToolParts(deltaObj.tool_calls||choice.message?.tool_calls);
     const r=deltaObj.reasoning??deltaObj.reasoning_content;
-    if(typeof r==='string')reasoning+=r;
+    if(typeof r==='string'&&r){
+      reasoning+=r;
+      if(extra.on_reasoning_delta){
+        try{await extra.on_reasoning_delta(r,reasoning,{mode:'reasoning'})}catch(_){}
+      }
+    }
     let delta=deltaObj.content;
     if(delta==null)delta=choice.text;
     if(Array.isArray(delta))delta=delta.map(x=>x?.text||x?.content||'').join('');
@@ -5542,15 +5855,25 @@ async function callOpenAI(endpointUrl,model,messages,extra={}){
     for(const line of buffer.split(/\r?\n/))if(line.startsWith('data:'))await consume(line.slice(5));
   }
 
-  if(responseMode==='chunked'&&chunkBuffer&&!suppressFallbackStream){
+  if(fallbackFilter)await fallbackFilter.finish();
+
+  if(responseMode==='chunked'&&chunkBuffer){
     const out=chunkBuffer;chunkBuffer='';
-    if(extra.on_delta)await extra.on_delta(out,full,{mode:'chunked',final:false});
+    if(extra.on_delta)await extra.on_delta(out,visibleFull,{mode:'chunked',final:false,kind:'content'});
   }
 
   let toolCalls=normalizeToolCalls([...toolParts.values()]);
-  if(requestedTools.length&&!nativeTools){
-    const parsed=extractFallbackToolCalls(full);toolCalls=parsed.tool_calls;full=parsed.text;
-    if(!toolCalls.length&&full&&extra.on_delta)await extra.on_delta(full,full,{mode:responseMode,final:true});
+  if(fallbackTools){
+    const parsed=extractFallbackToolCalls(full);
+    toolCalls=parsed.tool_calls;
+    full=parsed.text;
+    // visibleFull already streamed all non-tool protocol text incrementally.
+    // If the endpoint delivered no streamable prose but a normal final answer
+    // still exists, emit it once.
+    if(!toolCalls.length&&full&&!visibleFull&&extra.on_delta){
+      await extra.on_delta(full,full,{mode:responseMode,final:true,kind:'content'});
+      visibleFull=full;
+    }
   }
   if(!full&&!toolCalls.length)throw new Error('stream completed without text or tool calls');
 
@@ -5694,7 +6017,7 @@ async function kickMeshRecovery(node=null){
 }
 function isRecoverableMeshError(err){
   const msg=String(err?.message||err||'').toLowerCase();
-  return /message timeout|timed out|timeout|failed to send|no currently connected route|no route|transport|disconnected|connection|channel|peer.*left|route.*failed|networkerror|network error|provider saturated|queue full/.test(msg);
+  return /message timeout|timed out|timeout|failed to send|failed to fetch|local inference fetch failed|oim_local_fetch_failed|no currently connected route|no route|transport|disconnected|connection|channel|peer.*left|route.*failed|networkerror|network error|provider saturated|queue full/.test(msg);
 }
 async function callRemote(peerId,model,prompt,providerNode=null,requestMeta={}){
   const logicalId=String(requestMeta.job_id||uuid());
@@ -5704,7 +6027,10 @@ async function callRemote(peerId,model,prompt,providerNode=null,requestMeta={}){
   }
   const localMerit=meritSummaryFor(state.nodeId);
   if(localQuota.daily_used>=state.bootstrapDailyLimit&&Number(localMerit.leech_budget||0)<=0){
-    throw new Error(`free mesh allowance used: ${localQuota.daily_used}/${localQuota.daily_limit} requests in 24h; seed inference to earn merit for continued use`);
+    const err=new Error(`baseline mesh rate limit reached: ${localQuota.daily_used}/${localQuota.daily_limit} requests in rolling 24h`);
+    err.retryAfterMs=localQuota.daily_reset_ms||60_000;
+    err.rateLimited=true;
+    throw err;
   }
   recordMeshEgressUse(logicalId);
   const first=state.peers.get(peerId);
@@ -5810,7 +6136,13 @@ async function callRemote(peerId,model,prompt,providerNode=null,requestMeta={}){
         if(/merit budget exhausted/i.test(String(e?.message||e)))throw e;
         markRouteSuspect(routeId,e?.message||e);
         log('warn',`Route ${routeId.slice(0,8)} for ${node.slice(0,10)} failed (${String(e?.message||e).slice(0,120)}); trying another healthy route/provider.`);
-        if(!isRecoverableMeshError(e)){
+        const emsg=String(e?.message||e).toLowerCase();
+        if(/failed to fetch|local inference fetch failed|oim_local_fetch_failed/.test(emsg)){
+          // Request reached this peer, but its browser could not reach its local
+          // inference backend. Prefer a different provider while its LNA/backend
+          // state recovers.
+          failedUntil.set(node,now()+10_000);
+        }else if(!isRecoverableMeshError(e)){
           // Policy/model errors can still be served by a different provider of the same model.
           failedUntil.set(node,now()+4000);
         }
@@ -6166,7 +6498,7 @@ const OIM_AGENT_MANIFEST={
   tools:['get_api_docs','get_state','get_merit','list_chat_sessions','get_chat_session','create_chat_session','activate_chat_session','delete_chat_session','list_browser_tools','set_browser_tools','run_browser_tool','probe_endpoint_capabilities','list_models','scan_local','add_endpoint','join_mesh','leave_mesh','run_inference','accept_peer','deny_peer','set_peer_enabled','set_provider_policy','connect_nkn','set_rendezvous','issue_capability','import_capability','announce','create_manual_offer','answer_manual_offer','accept_manual_answer','get_deployment_guide']
 };
 function safeEndpointState(ep){return {url:ep.url,label:ep.label,status:ep.status,type:ep.type||null,latency_ms:ep.latency??null,models:[...(ep.models||[])],capabilities:ep.capabilities?{status:ep.capabilities.status,tools_native:!!ep.capabilities.toolsNative,tools_mode:ep.capabilities.toolsNative?'native':'browser-prompt-fallback',reasoning_style:ep.capabilities.reasoningStyle||'server',probed_at:ep.capabilities.probedAt||null}:null,last_seen:ep.lastSeen||null,error:ep.error||null}}
-function agentSnapshot(){return {protocol:'open-inference-mesh',version:7,timestamp:now(),secure_context:window.isSecureContext,quota:quotaAgentState(),merit:{protocol:'oim-merit-v1',enforced:state.meritEnabled,...meritSummaryFor(state.nodeId),models:meritModelBreakdownFor(state.nodeId)},response_delivery:{default:state.responseMode||'stream',supported:['stream','chunked'],chunk_size:state.responseChunkSize||CONFIG.defaultChunkSize},reasoning:{mode:state.reasoningMode||'auto',endpoint_control:'auto-probed'},browser_tools:{enabled:state.toolsEnabled,max_rounds:null,tools:browserToolState()},node:{id:state.nodeId,identity_algorithm:state.identity?.alg||null,mesh_joined:state.joined,nkn_enabled:state.nknEnabled,nkn_status:state.nkn.status,nkn_address:state.nkn.addr||null},chat:{active_session:state.chatSessionId,title:state.chatSession?.title||null,messages:state.chatSession?.transcript?.length||0,persistence:'IndexedDB with localStorage fallback'},routing:{default:'balanced',policy:'capability-fit then health-weighted selection across near-best providers with stable-job route recovery and automatic provider failover',load_balancing:true,recovery:'stable NodeID re-resolution + non-destructive request-route quarantine + replay-safe retries + exact-model provider failover; peer online/offline changes only on actual transport presence events',interlacing:'multi-tool/model rounds rotate across healthy providers of the exact model when multiple equivalent providers exist'},model_catalog:consolidatedModels().map(m=>({model:m.model,providers:m.providers.length,local:m.local,mesh:m.mesh,capabilities:m.capabilities})),provider:{advertise:state.advertise,share:state.share,public_agent_gateway:state.agentPublicAccess,
+function agentSnapshot(){return {protocol:'open-inference-mesh',version:7,timestamp:now(),secure_context:window.isSecureContext,quota:quotaAgentState(),merit:{protocol:'oim-merit-v1',enforced:state.meritEnabled,...meritSummaryFor(state.nodeId),provider_earned:providerEarnedSummary(),models:meritModelBreakdownFor(state.nodeId)},response_delivery:{default:state.responseMode||'stream',supported:['stream','chunked'],chunk_size:state.responseChunkSize||CONFIG.defaultChunkSize,diagnostics:{...state.streamDiag}},reasoning:{mode:state.reasoningMode||'auto',endpoint_control:'auto-probed'},browser_tools:{enabled:state.toolsEnabled,max_rounds:null,tools:browserToolState()},node:{id:state.nodeId,identity_algorithm:state.identity?.alg||null,mesh_joined:state.joined,nkn_enabled:state.nknEnabled,nkn_status:state.nkn.status,nkn_address:state.nkn.addr||null,local_network_access:{loopback:state.lanPermission.loopback,local:state.lanPermission.local,auto_attempted:state.lanPermission.autoAttempted}},chat:{active_session:state.chatSessionId,title:state.chatSession?.title||null,messages:state.chatSession?.transcript?.length||0,persistence:'IndexedDB with localStorage fallback'},routing:{default:'balanced',policy:'capability-fit then health-weighted selection across near-best providers with stable-job route recovery and automatic provider failover',load_balancing:true,recovery:'stable NodeID re-resolution + non-destructive request-route quarantine + replay-safe retries + exact-model provider failover; peer online/offline changes only on actual transport presence events',interlacing:'multi-tool/model rounds rotate across healthy providers of the exact model when multiple equivalent providers exist'},model_catalog:consolidatedModels().map(m=>({model:m.model,providers:m.providers.length,local:m.local,mesh:m.mesh,capabilities:m.capabilities})),provider:{advertise:state.advertise,share:state.share,public_agent_gateway:state.agentPublicAccess,
 tokens_per_second:Number(state.providerPerf.tpsEma)||0,last_sample_tokens_per_second:Number(state.providerPerf.lastTps)||0,
 performance_timestamp:Number(state.providerPerf.lastCompletedAt)||0,inference_active:state.activeRemoteJobs>0,access_mode:state.accessMode,served_models:state.serveModels,max_active:state.maxJobs,max_queue:state.maxQueue,peer_active_limit:state.perPeerConcurrent,peer_queue_limit:state.perPeerQueue,rpm_limit:state.rpmLimit,estimated_tpm_limit:state.tpmLimit,max_remote_output_tokens:state.maxRemoteTokens,queue_timeout_sec:state.queueTimeoutSec,active_jobs:state.activeRemoteJobs,queued_jobs:state.remoteQueue.length},endpoints:[...state.endpoints.values()].map(safeEndpointState),local_models:localModels().map(x=>({model:x.model,endpoint:x.endpoint,label:x.label,capabilities:x.capabilities,active:x.load,capacity:x.capacity,latency_ms:x.latency})),remote_models:remoteModels().map(x=>{
   const peer=state.peers.get(x.peerId);
@@ -6529,7 +6861,7 @@ async function agentDeleteChatSession({id}={}){
   await chatStoreDelete(id);await refreshSessionIndex(true);return {ok:true,deleted:id};
 }
 
-const OIM_RPC_METHODS={get_api_docs:async()=>agentApiDocs(),get_state:async()=>agentSnapshot(),get_quota:async()=>quotaAgentState(),get_merit:async()=>({protocol:'oim-merit-v1',enforced:state.meritEnabled,...meritSummaryFor(state.nodeId),models:meritModelBreakdownFor(state.nodeId),receipts:[...state.meritReceipts.values()].filter(r=>r.subject===state.nodeId)}),list_chat_sessions:agentListChatSessions,get_chat_session:agentGetChatSession,create_chat_session:agentCreateChatSession,activate_chat_session:agentActivateChatSession,delete_chat_session:agentDeleteChatSession,list_browser_tools:async()=>({enabled:state.toolsEnabled,max_rounds:null,tools:browserToolState()}),set_browser_tools:agentSetBrowserTools,run_browser_tool:agentRunBrowserTool,probe_endpoint_capabilities:async()=>{await probeAllEndpointCapabilities(true);return [...state.endpoints.values()].map(safeEndpointState)},list_models:async()=>listAgentModels(),scan_local:async()=>{await scanCommon();return {ok:true,endpoints:[...state.endpoints.values()].map(safeEndpointState)}},add_endpoint:async({url,label='agent',api_key=''}={})=>{const ep=await probeEndpoint(normalizeBaseUrl(String(url||'')),String(label||'agent'),String(api_key||''));if(!ep)throw new Error('endpoint unreachable');return safeEndpointState(ep)},join_mesh:async()=>{await joinMesh();return {ok:state.joined}},leave_mesh:async()=>{leaveMesh();return {ok:true}},run_inference:agentRunInference,
+const OIM_RPC_METHODS={get_api_docs:async()=>agentApiDocs(),get_state:async()=>agentSnapshot(),request_local_network_access:async()=>requestLanPermission({force:true}),get_quota:async()=>quotaAgentState(),get_merit:async()=>({protocol:'oim-merit-v1',enforced:state.meritEnabled,...meritSummaryFor(state.nodeId),provider_earned:providerEarnedSummary(),models:meritModelBreakdownFor(state.nodeId),receipts:[...state.meritReceipts.values()].filter(r=>r.subject===state.nodeId)}),list_chat_sessions:agentListChatSessions,get_chat_session:agentGetChatSession,create_chat_session:agentCreateChatSession,activate_chat_session:agentActivateChatSession,delete_chat_session:agentDeleteChatSession,list_browser_tools:async()=>({enabled:state.toolsEnabled,max_rounds:null,tools:browserToolState()}),set_browser_tools:agentSetBrowserTools,run_browser_tool:agentRunBrowserTool,probe_endpoint_capabilities:async()=>{await probeAllEndpointCapabilities(true);return [...state.endpoints.values()].map(safeEndpointState)},list_models:async()=>listAgentModels(),scan_local:async()=>{await scanCommon();return {ok:true,endpoints:[...state.endpoints.values()].map(safeEndpointState)}},add_endpoint:async({url,label='agent',api_key=''}={})=>{const ep=await probeEndpoint(normalizeBaseUrl(String(url||'')),String(label||'agent'),String(api_key||''));if(!ep)throw new Error('endpoint unreachable');return safeEndpointState(ep)},join_mesh:async()=>{await joinMesh();return {ok:state.joined}},leave_mesh:async()=>{leaveMesh();return {ok:true}},run_inference:agentRunInference,
   accept_peer:async({node}={})=>{if(!node)throw new Error('node required');await acceptPeer(String(node));return {ok:true,node,decision:'accepted',enabled:true}},
   deny_peer:async({node}={})=>{if(!node)throw new Error('node required');denyPeer(String(node));return {ok:true,node,decision:'denied'}},
   set_peer_enabled:async({node,enabled}={})=>{if(!node)throw new Error('node required');if(!state.peerAccepted.has(String(node)))throw new Error('peer must be accepted first');if(enabled)state.peerEnabled.add(String(node));else state.peerEnabled.delete(String(node));persistPolicy();renderPeers();return {ok:true,node,enabled:nodeIsEnabled(String(node))}},
@@ -6632,7 +6964,7 @@ function compatibility(){
 
 /* ---------- UI bindings ---------- */
 $('#copyNodeBtn').onclick=async()=>{await navigator.clipboard.writeText(state.nodeId);log('ok','Node ID copied.')};
-$('#grantLanBtn').onclick=requestLanPermission;
+$('#grantLanBtn').onclick=()=>requestLanPermission({force:true});
 $('#checkPermBtn').onclick=checkPermissions;
 $('#scanBtn').onclick=scanCommon;
 $('#addEndpointBtn').onclick=async()=>{
@@ -7212,6 +7544,10 @@ function initSidebarLayout(){
   hydrateHttpToolSpecs();
   renderBrowserTools();
   await checkPermissions();
+  // Local Network Access is request-triggered in Chromium. Ask automatically
+  // during startup; if the browser requires transient user activation, a single
+  // first-gesture retry is armed automatically.
+  autoRequestLanPermission().catch(()=>{});
   renderEndpoints();renderPeerOffers();renderPeers();refreshModelSelect();renderStatePanel();updateShareSummary();renderMerit();
   resizeCanvas();updateStats();
   await registerWebMcpTools();refreshAgentPanel();
@@ -7221,7 +7557,10 @@ function initSidebarLayout(){
 
   // Quiet startup: probe only conventional Ollama automatically.
   // Full localhost sweep remains available through the explicit scan control/API.
-  setTimeout(()=>probeEndpoint('http://127.0.0.1:11434','Ollama','').catch(()=>{}),700);
+  setTimeout(async()=>{
+    await autoRequestLanPermission().catch(()=>{});
+    probeEndpoint('http://127.0.0.1:11434','Ollama','').catch(()=>{});
+  },900);
 
   const qp=new URLSearchParams(location.search);
   if(qp.get('route')&&['auto','local','mesh'].includes(qp.get('route')))$('#routeSelect').value=qp.get('route');
