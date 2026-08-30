@@ -7,7 +7,7 @@
 <meta name="description" content="Open Inference Mesh: a static-hostable, local-first peer-to-peer intelligence commons. People and agents can discover shared inference, use it within provider limits, and voluntarily contribute locally owned models so useful machine intelligence becomes broadly accessible rather than dependent on a single institution.">
 <meta name="robots" content="index,follow">
 <meta name="application-name" content="Open Inference Mesh">
-<meta name="oim-protocol" content="open-inference-mesh-v7.10">
+<meta name="oim-protocol" content="open-inference-mesh-v7.11">
 <meta name="agent-interface" content="WebMCP, window.OIM, same-origin postMessage RPC, CustomEvent RPC">
 <link rel="help" href="?api=docs" title="Open Inference Mesh machine API documentation">
 <link rel="alternate" type="application/json" href="?api=docs" title="OIM agent API">
@@ -1429,6 +1429,13 @@ function loadPolicy(){
       state.toolsEnabled=true;
       state.toolMaxRounds=0;
       localStorage.setItem('oim.toolDefaultsV78','1');
+    }
+    if(localStorage.getItem('oim.toolDefaultsV711')!=='1'){
+      // New release default: every built-in tool is enabled, including all
+      // scholarly/package/search federation adapters added after v7.7.
+      for(const n of Object.keys(BUILTIN_BROWSER_TOOLS))state.enabledBrowserTools.add(n);
+      state.toolsEnabled=true;
+      localStorage.setItem('oim.toolDefaultsV711','1');
     }
     const a=JSON.parse(localStorage.getItem('oim.allowlist')||'[]');
     state.allowlist=new Set(Array.isArray(a)?a:[]);
@@ -4228,22 +4235,61 @@ function providerHealthScore(provider,requirements={}){
     (saturated?3.5:0)+
     (stale?0.6:0);
 }
-function weightedHealthyPick(candidates,requirements={}){
-  const scored=(candidates||[]).map(p=>({p,score:providerHealthScore(p,requirements)})).filter(x=>x.score<1000);
+function weightedHealthyPick(candidates,requirements={},scoreAdjust=null){
+  const scored=(candidates||[]).map(p=>{
+    const base=providerHealthScore(p,requirements);
+    const adjust=typeof scoreAdjust==='function'?Number(scoreAdjust(p,base))||0:0;
+    return {p,score:base+adjust,base,adjust};
+  }).filter(x=>x.base<1000&&x.score<1000);
   if(!scored.length)return null;
   scored.sort((a,b)=>a.score-b.score);
   const best=scored[0].score;
   // Only near-best healthy providers participate. This prevents bad nodes from
   // receiving work while still avoiding a deterministic stampede on one node.
-  const pool=scored.filter(x=>x.score<=best+0.85).slice(0,8);
+  const pool=scored.filter(x=>x.score<=best+0.95).slice(0,10);
   if(pool.length===1)return pool[0].p;
-  const weights=pool.map(x=>Math.exp(-1.45*(x.score-best))*(1+(Math.random()*state.routeJitter)));
+  const weights=pool.map(x=>Math.exp(-1.35*(x.score-best))*(1+(Math.random()*state.routeJitter)));
   const total=weights.reduce((a,b)=>a+b,0);
   let r=Math.random()*total;
   for(let i=0;i<pool.length;i++){r-=weights[i];if(r<=0)return pool[i].p}
   return pool[0].p;
 }
-function selectModelProvider(model,{route='auto',forAgent=false,preferredNode=null,requirements={}}={}){
+function providerIdentity(provider){
+  if(!provider)return '';
+  return provider.source==='local'
+    ?`local:${provider.endpoint||provider.label||'endpoint'}:${canonicalModelName(provider.model)}`
+    :`mesh:${provider.providerNode||provider.peerId||'peer'}:${canonicalModelName(provider.model)}`;
+}
+function createProviderInterlaceState(){
+  return {round:0,last:null,recent:[],counts:new Map(),sequence:[]};
+}
+function providerInterlacePenalty(provider,interlace,viableCount=1){
+  if(!interlace||viableCount<2)return 0;
+  const id=providerIdentity(provider);
+  const used=interlace.counts.get(id)||0;
+  let penalty=used*0.16;
+  // Strongly encourage the next reasoning/tool round to move to another
+  // equivalent provider, but not enough to select a materially unhealthy node.
+  if(interlace.last===id)penalty+=0.82;
+  const pos=interlace.recent.lastIndexOf(id);
+  if(pos>=0)penalty+=Math.max(0,0.30-(interlace.recent.length-1-pos)*0.08);
+  return penalty;
+}
+function recordInterlacedProvider(interlace,provider){
+  if(!interlace||!provider)return;
+  const id=providerIdentity(provider);
+  interlace.round++;
+  interlace.last=id;
+  interlace.counts.set(id,(interlace.counts.get(id)||0)+1);
+  interlace.recent.push(id);
+  if(interlace.recent.length>6)interlace.recent.shift();
+  interlace.sequence.push({
+    round:interlace.round,id,source:provider.source,
+    provider_node:provider.providerNode||null,endpoint:provider.endpoint||null,
+    label:provider.label||null,model:provider.model
+  });
+}
+function modelProviderCandidates(model,{route='auto',forAgent=false,preferredNode=null,requirements={}}={}){
   const key=canonicalModelName(model);
   let providers=[];
   for(const m of consolidatedModels({agentOnly:forAgent})){
@@ -4257,7 +4303,17 @@ function selectModelProvider(model,{route='auto',forAgent=false,preferredNode=nu
     if(state.peers.has(node))node=state.peers.get(node)?.node||node;
     providers=providers.filter(p=>p.source==='mesh'&&p.providerNode===node);
   }
-  return weightedHealthyPick(providers,requirements);
+  return providers.filter(p=>providerCapabilityPenalty(p,requirements)<1000);
+}
+function selectModelProvider(model,{route='auto',forAgent=false,preferredNode=null,requirements={},interlace=null}={}){
+  const providers=modelProviderCandidates(model,{route,forAgent,preferredNode,requirements});
+  return weightedHealthyPick(
+    providers,
+    requirements,
+    interlace&&providers.length>1
+      ?p=>providerInterlacePenalty(p,interlace,providers.length)
+      :null
+  );
 }
 function chooseLocalProvider(name,requirements={}){
   if(!name){
@@ -4937,6 +4993,7 @@ async function runPrompt(){
   assistant.classList.add('streaming');
   let streamed='',lastProvider=null;
   const providerHistory=[];
+  const interlace=createProviderInterlaceState();
   const onDelta=(delta,full)=>{streamed=full;setMessageText(assistant,full);$('#jobProgress').style.width='70%'};
   const onTool=entry=>addToolTrace(entry,assistant);
 
@@ -4945,8 +5002,9 @@ async function runPrompt(){
       messages,onDelta,onTool,reasoningMode,responseMode,chunkSize,
       invoke:async(msgs,ctx)=>{
         const requirements={tools:(ctx.tools||[]).length>0,reasoning:ctx.reasoning_mode};
-        const provider=selectModelProvider(choice.model,{route,requirements});
+        const provider=selectModelProvider(choice.model,{route,requirements,interlace});
         if(!provider)throw new Error(`no healthy ${route==='auto'?'local/mesh':route} provider currently serves ${choice.model} with the requested capabilities`);
+        recordInterlacedProvider(interlace,provider);
         lastProvider=provider;
         providerHistory.push(provider.source==='local'?`local:${provider.endpoint}`:`peer:${provider.providerNode}`);
         $('#jobProgress').style.width='35%';
@@ -4978,7 +5036,7 @@ async function runPrompt(){
     const perf=result.tps?` · ${formatTps(result.tps)}`:'';
     const toolText=`${result.tool_history?.length||0} tool${result.tool_history?.length===1?'':'s'}`;
     finalizeMessageMarkdown(assistant,result.text||streamed||'');
-    setMessageMeta(assistant,`${routeLabel}→${source} · ${choice.model} · ${responseMode.toUpperCase()} · ${toolText} · ${uniqueProviders.length} provider${uniqueProviders.length===1?'':'s'}${perf}`);
+    setMessageMeta(assistant,`${routeLabel}→${source} · ${choice.model} · ${responseMode.toUpperCase()} · ${toolText} · ${uniqueProviders.length} provider${uniqueProviders.length===1?'':'s'}${interlace.round>1&&uniqueProviders.length>1?' · INTERLACED':''}${perf}`);
     assistant.classList.remove('streaming');$('#jobProgress').style.width='100%';
     updateSessionStatus();
   }catch(e){
@@ -5076,7 +5134,7 @@ const OIM_AGENT_MANIFEST={
   tools:['get_api_docs','get_state','list_chat_sessions','get_chat_session','create_chat_session','activate_chat_session','delete_chat_session','list_browser_tools','set_browser_tools','run_browser_tool','probe_endpoint_capabilities','list_models','scan_local','add_endpoint','join_mesh','leave_mesh','run_inference','accept_peer','deny_peer','set_peer_enabled','set_provider_policy','connect_nkn','set_rendezvous','issue_capability','import_capability','announce','create_manual_offer','answer_manual_offer','accept_manual_answer','get_deployment_guide']
 };
 function safeEndpointState(ep){return {url:ep.url,label:ep.label,status:ep.status,type:ep.type||null,latency_ms:ep.latency??null,models:[...(ep.models||[])],capabilities:ep.capabilities?{status:ep.capabilities.status,tools_native:!!ep.capabilities.toolsNative,tools_mode:ep.capabilities.toolsNative?'native':'browser-prompt-fallback',reasoning_style:ep.capabilities.reasoningStyle||'server',probed_at:ep.capabilities.probedAt||null}:null,last_seen:ep.lastSeen||null,error:ep.error||null}}
-function agentSnapshot(){return {protocol:'open-inference-mesh',version:7,timestamp:now(),secure_context:window.isSecureContext,response_delivery:{default:state.responseMode||'stream',supported:['stream','chunked'],chunk_size:state.responseChunkSize||CONFIG.defaultChunkSize},reasoning:{mode:state.reasoningMode||'auto',endpoint_control:'auto-probed'},browser_tools:{enabled:state.toolsEnabled,max_rounds:null,tools:browserToolState()},node:{id:state.nodeId,identity_algorithm:state.identity?.alg||null,mesh_joined:state.joined,nkn_enabled:state.nknEnabled,nkn_status:state.nkn.status,nkn_address:state.nkn.addr||null},chat:{active_session:state.chatSessionId,title:state.chatSession?.title||null,messages:state.chatSession?.transcript?.length||0,persistence:'IndexedDB with localStorage fallback'},routing:{default:'balanced',policy:'capability-fit then health-weighted selection across near-best providers with stable-job route recovery and automatic provider failover',load_balancing:true,recovery:'stable NodeID re-resolution + route quarantine + replay-safe retries + exact-model provider failover'},model_catalog:consolidatedModels().map(m=>({model:m.model,providers:m.providers.length,local:m.local,mesh:m.mesh,capabilities:m.capabilities})),provider:{advertise:state.advertise,share:state.share,public_agent_gateway:state.agentPublicAccess,
+function agentSnapshot(){return {protocol:'open-inference-mesh',version:7,timestamp:now(),secure_context:window.isSecureContext,response_delivery:{default:state.responseMode||'stream',supported:['stream','chunked'],chunk_size:state.responseChunkSize||CONFIG.defaultChunkSize},reasoning:{mode:state.reasoningMode||'auto',endpoint_control:'auto-probed'},browser_tools:{enabled:state.toolsEnabled,max_rounds:null,tools:browserToolState()},node:{id:state.nodeId,identity_algorithm:state.identity?.alg||null,mesh_joined:state.joined,nkn_enabled:state.nknEnabled,nkn_status:state.nkn.status,nkn_address:state.nkn.addr||null},chat:{active_session:state.chatSessionId,title:state.chatSession?.title||null,messages:state.chatSession?.transcript?.length||0,persistence:'IndexedDB with localStorage fallback'},routing:{default:'balanced',policy:'capability-fit then health-weighted selection across near-best providers with stable-job route recovery and automatic provider failover',load_balancing:true,recovery:'stable NodeID re-resolution + route quarantine + replay-safe retries + exact-model provider failover',interlacing:'multi-tool/model rounds rotate across healthy providers of the exact model when multiple equivalent providers exist'},model_catalog:consolidatedModels().map(m=>({model:m.model,providers:m.providers.length,local:m.local,mesh:m.mesh,capabilities:m.capabilities})),provider:{advertise:state.advertise,share:state.share,public_agent_gateway:state.agentPublicAccess,
 tokens_per_second:Number(state.providerPerf.tpsEma)||0,last_sample_tokens_per_second:Number(state.providerPerf.lastTps)||0,
 performance_timestamp:Number(state.providerPerf.lastCompletedAt)||0,inference_active:state.activeRemoteJobs>0,access_mode:state.accessMode,served_models:state.serveModels,max_active:state.maxJobs,max_queue:state.maxQueue,peer_active_limit:state.perPeerConcurrent,peer_queue_limit:state.perPeerQueue,rpm_limit:state.rpmLimit,estimated_tpm_limit:state.tpmLimit,max_remote_output_tokens:state.maxRemoteTokens,queue_timeout_sec:state.queueTimeoutSec,active_jobs:state.activeRemoteJobs,queued_jobs:state.remoteQueue.length},endpoints:[...state.endpoints.values()].map(safeEndpointState),local_models:localModels().map(x=>({model:x.model,endpoint:x.endpoint,label:x.label,capabilities:x.capabilities,active:x.load,capacity:x.capacity,latency_ms:x.latency})),remote_models:remoteModels().map(x=>{
   const peer=state.peers.get(x.peerId);
@@ -5180,14 +5238,19 @@ async function agentRunInference({
   const modelName=chosen.model,t0=performance.now();
   let lastProvider=null;
   const providerHistory=[];
+  const interlace=createProviderInterlaceState();
 
   const result=await runBrowserToolLoop({
     messages,onDelta:emit,onTool:toolEvent,useTools:tools!==false,
     reasoningMode:reasoning,responseMode:response_mode,chunkSize:chunk_size,
     invoke:async(msgs,ctx)=>{
       const requirements={...requires,tools:(ctx.tools||[]).length>0,reasoning:ctx.reasoning_mode};
-      const provider=selectModelProvider(modelName,{route,forAgent:true,preferredNode:provider_node,requirements});
+      const provider=selectModelProvider(modelName,{
+        route,forAgent:true,preferredNode:provider_node,requirements,
+        interlace:provider_node?null:interlace
+      });
       if(!provider)throw new Error(`no healthy provider currently satisfies ${modelName}`);
+      recordInterlacedProvider(interlace,provider);
       lastProvider=provider;
       providerHistory.push(provider.source==='local'?`local:${provider.endpoint}`:`peer:${provider.providerNode}`);
 
@@ -5220,6 +5283,8 @@ async function agentRunInference({
     response_mode,reasoning_mode:reasoning,reasoning_style:result.reasoning_style||lastProvider?.capabilities?.reasoning_style||null,
     tools_used:result.tool_history||[],usage:result.usage||null,
     providers_used:[...new Set(providerHistory)],
+    provider_rounds:interlace.sequence,
+    interlaced_reasoning:interlace.sequence.length>1&&new Set(interlace.sequence.map(x=>x.id)).size>1,
     load_balancing:route==='auto',
     session_id:targetSession?.id||null,
     session_persisted:!!targetSession,
@@ -5318,6 +5383,7 @@ function agentApiDocs(){
     },
     browser_tool_broker:{
       tool_rounds:'unlimited',
+      builtins_default:'all enabled',
       execution_location:'requesting browser monolith',
       remote_provider_behavior:'Remote inference providers receive tool schemas and generate tool calls, but never execute browser tools. Tool calls return to the requester, execute there, and tool results are sent back for the next model turn.',
       defaults:browserToolState(),
@@ -5343,8 +5409,8 @@ function agentApiDocs(){
     },
     routing:{
       default:'auto balanced',
-      behavior:'For a selected model name, OIM consolidates all local endpoints and signed peers that report that model. Each inference/tool round filters by requested capabilities, scores live utilization, queue pressure, throughput and latency, then randomly selects among near-best healthy providers.',
-      benefit:'Avoids a deterministic hotspot while naturally shifting new work away from saturated or slow nodes. A single generation stays on one provider, while independent requests and stateless tool-loop rounds may use different providers.',
+      behavior:'For a selected model name, OIM consolidates all local endpoints and signed peers that report that model. Each inference/tool round filters by requested capabilities, scores live utilization, queue pressure, throughput and latency, then selects among near-best healthy providers. During multi-tool reasoning, a recent-provider penalty deliberately interlaces successive rounds across equivalent providers while still avoiding unhealthy nodes.',
+      benefit:'Avoids a deterministic hotspot while naturally shifting new work away from saturated or slow nodes. A single streamed generation stays coherent on one provider; after a tool result, the complete transcript can be handed to another provider of the exact same model for the next reasoning round.',
       recovery:'Transport/message timeouts and peer refreshes are treated as transient. The requester re-resolves the stable signed NodeID, refreshes discovery, retries over fresh WebRTC/NKN routes, and may fail over to another healthy provider of the exact model. Stable job IDs plus provider replay/watchers prevent duplicate-job hard failures.'
     },
     provider_behavior:{
