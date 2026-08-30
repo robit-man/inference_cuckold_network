@@ -7,7 +7,7 @@
 <meta name="description" content="Open Inference Mesh: a static-hostable, local-first peer-to-peer intelligence commons. People and agents can discover shared inference, use it within provider limits, and voluntarily contribute locally owned models so useful machine intelligence becomes broadly accessible rather than dependent on a single institution.">
 <meta name="robots" content="index,follow">
 <meta name="application-name" content="Open Inference Mesh">
-<meta name="oim-protocol" content="open-inference-mesh-v7.15">
+<meta name="oim-protocol" content="open-inference-mesh-v7.16">
 <meta name="agent-interface" content="WebMCP, window.OIM, same-origin postMessage RPC, CustomEvent RPC">
 <link rel="help" href="?api=docs" title="Open Inference Mesh machine API documentation">
 <link rel="alternate" type="application/json" href="?api=docs" title="OIM agent API">
@@ -1628,11 +1628,12 @@ function meritModelBreakdownFor(node=state.nodeId,receipts=[...state.meritReceip
 function meritAdvertisedSummary(){
   return {...meritSummaryFor(state.nodeId),models:meritModelBreakdownFor(state.nodeId).slice(0,24)};
 }
-function meritProofBundle(){
-  const receipts=[...state.meritReceipts.values()]
+function meritProofBundle({compact=false}={}){
+  const all=[...state.meritReceipts.values()]
     .filter(r=>r.subject===state.nodeId)
-    .sort((a,b)=>(a.ts||0)-(b.ts||0))
-    .slice(-state.meritReceiptLimit);
+    .sort((a,b)=>(a.ts||0)-(b.ts||0));
+  const limit=compact?192:state.meritReceiptLimit;
+  const receipts=all.slice(-limit);
   return {v:1,address:state.nodeId,receipts,summary:{...meritSummaryFor(state.nodeId,receipts),models:meritModelBreakdownFor(state.nodeId,receipts)}};
 }
 async function verifyMeritProofBundle(bundle,expectedNode){
@@ -4484,15 +4485,36 @@ function sendJobState(wrapper,peerId,id,status,extra={}){
   };
   for(const t of replayTargets(id))t.wrapper.actions.state.send(payload,{target:t.peerId}).catch(()=>{});
 }
-async function sendJobDelta(wrapper,peerId,id,payload){
+function sendJobDelta(wrapper,peerId,id,payload){
   registerJobWatcher(id,wrapper,peerId);
-  await Promise.allSettled(replayTargets(id).map(t=>t.wrapper.actions.delta.send({id,...payload},{target:t.peerId})));
+  const targets=replayTargets(id);
+  // Never block model generation on stale/reconnecting replay routes.
+  for(const t of targets){
+    Promise.resolve(
+      t.wrapper.actions.delta.send({id,...payload},{target:t.peerId})
+    ).catch(()=>{});
+  }
 }
 async function sendJobResult(wrapper,peerId,result,status=null){
   const id=result?.id;if(!id)return;
   const rec=registerJobWatcher(id,wrapper,peerId);
   rec.result=result;rec.status=status||(result.ok?'complete':'failed');rec.ts=now();
-  await Promise.allSettled(replayTargets(id).map(t=>t.wrapper.actions.result.send(result,{target:t.peerId})));
+
+  const targets=replayTargets(id);
+  const primary=targets.find(t=>t.wrapper===wrapper&&t.peerId===peerId);
+  const others=targets.filter(t=>t!==primary);
+
+  if(primary){
+    try{
+      await Promise.race([
+        Promise.resolve(primary.wrapper.actions.result.send(result,{target:primary.peerId})),
+        sleep(1800).then(()=>{throw new Error('primary result send timeout')})
+      ]);
+    }catch(_){}
+  }
+  for(const t of others){
+    Promise.resolve(t.wrapper.actions.result.send(result,{target:t.peerId})).catch(()=>{});
+  }
 }
 
 function enqueueRemoteJob(job){
@@ -4560,8 +4582,8 @@ async function executeRemoteJob(job){
       tools:auth.tools,
       reasoning_mode:reasoningModeForRequest(data.reasoning_mode||'auto'),
       response_mode:responseMode,chunk_size:chunkSize,
-      on_delta:async delta=>{
-        await sendJobDelta(wrapper,peerId,data.id,{delta,seq:seq++,mode:responseMode,ts:now()});
+      on_delta:delta=>{
+        sendJobDelta(wrapper,peerId,data.id,{delta,seq:seq++,mode:responseMode,ts:now()});
       }
     });
     const latencyMs=Math.max(1,Math.round(performance.now()-t0));
@@ -4651,6 +4673,14 @@ function handleRemoteState(data,meta,wrapper){
     p.lastStateAt=now();
     if(data.status==='queued')log('info',`Remote job ${data.id.slice(0,8)} queued at position ${data.position||'?'}.`);
     if(data.status==='running')log('info',`Remote job ${data.id.slice(0,8)} is running.`);
+    if(data.status==='rejected'&&data.error){
+      const err=new Error(String(data.error));
+      err.retryAfterMs=Number(data.retryAfterMs)||0;
+      setTimeout(()=>{
+        const current=state.pending.get(data.id);
+        if(current===p)current.reject(err);
+      },80);
+    }
   }
   const peer=state.peers.get(meta.peerId);
   if(peer){
@@ -4702,15 +4732,14 @@ function handleInferenceDelta(data,meta,wrapper){
     peer.suspectUntil=0;peer.routeFailures=0;peer.lastError='';
   }
 }
-async function handleInferenceResult(data,meta,wrapper){
+function handleInferenceResult(data,meta,wrapper){
   if(!data?.id)return;
   const pending=state.pending.get(data.id);
   const peer=state.peers.get(meta.peerId);
   const sourceNode=peer?.node||null;
-  if(pending?.providerNode&&sourceNode&&sourceNode!==pending.providerNode){
-    // Late completion from an abandoned provider attempt; ignore it.
-    return;
-  }
+
+  if(pending?.providerNode&&sourceNode&&sourceNode!==pending.providerNode)return;
+
   if(peer&&data.ok){
     peer.suspectUntil=0;peer.routeFailures=0;peer.lastError='';
     const sample=Number(data.tps)||0;
@@ -4723,24 +4752,39 @@ async function handleInferenceResult(data,meta,wrapper){
     if(data.output_tokens)peer.lastOutputTokens=Number(data.output_tokens)||0;
     if(data.latency_ms)peer.lastLatencyMs=Number(data.latency_ms)||0;
   }
-  if(data.ok&&data.merit_receipt&&sourceNode){
-    const charge=await recordMeritReceipt(data.merit_receipt).catch(()=>null);
-    if(charge&&charge.kind==='leech'&&charge.subject===state.nodeId&&charge.issuer===sourceNode&&wrapper?.actions?.merit){
-      try{
-        const seedReceipt=await makeMeritReceipt('seed',sourceNode,{
-          job_id:charge.job_id,model:charge.model,tokens:charge.tokens,tps:charge.tps,latency_ms:charge.latency_ms,caps:charge.caps||{}
-        });
-        await recordMeritReceipt(seedReceipt);
-        await wrapper.actions.merit.send({type:'receipt',receipt:seedReceipt},{target:meta.peerId});
-      }catch(e){log('warn',`Merit seed acknowledgement deferred: ${e.message}`)}
-    }
+
+  // Deliver inference before any ancillary merit bookkeeping.
+  if(pending){
+    clearTimeout(pending.timer);
+    if(pending.health)clearInterval(pending.health);
+    state.pending.delete(data.id);
+    if(data.ok)pending.resolve({...data,peerId:meta.peerId});
+    else pending.reject(new Error(data.error||'remote inference failed'));
   }
-  renderMerit();renderPeers();
-  if(!pending)return;
-  clearTimeout(pending.timer);
-  state.pending.delete(data.id);
-  if(data.ok)pending.resolve({...data,peerId:meta.peerId});
-  else pending.reject(new Error(data.error||'remote inference failed'));
+
+  renderPeers();
+
+  if(data.ok&&data.merit_receipt&&sourceNode){
+    (async()=>{
+      try{
+        const charge=await recordMeritReceipt(data.merit_receipt).catch(()=>null);
+        if(charge&&charge.kind==='leech'&&charge.subject===state.nodeId&&charge.issuer===sourceNode&&wrapper?.actions?.merit){
+          const seedReceipt=await makeMeritReceipt('seed',sourceNode,{
+            job_id:charge.job_id,model:charge.model,tokens:charge.tokens,
+            tps:charge.tps,latency_ms:charge.latency_ms,caps:charge.caps||{}
+          });
+          await recordMeritReceipt(seedReceipt);
+          Promise.resolve(
+            wrapper.actions.merit.send({type:'receipt',receipt:seedReceipt},{target:meta.peerId})
+          ).catch(()=>{});
+        }
+      }catch(e){
+        log('warn',`Merit seed acknowledgement deferred: ${e.message}`);
+      }finally{
+        renderMerit();renderPeers();
+      }
+    })();
+  }else renderMerit();
 }
 
 function cleanupPeers(){
@@ -5708,7 +5752,8 @@ async function callRemote(peerId,model,prompt,providerNode=null,requestMeta={}){
           messages:sanitizeInferenceMessages(requestMeta.messages,prompt),
           tools:sanitizeRemoteTools(requestMeta.tools||[]),
           grant:grant||null,agent:!!requestMeta.agent,
-          merit:meritProofBundle(),
+          // Bootstrap access does not need historical merit proof on every request.
+          merit:localQuota.daily_used<state.bootstrapDailyLimit?null:meritProofBundle({compact:true}),
           reasoning_mode:reasoningModeForRequest(requestMeta.reasoning_mode||state.reasoningMode),
           response_mode:requestMeta.response_mode==='chunked'?'chunked':'stream',
           chunk_size:clamp(Number(requestMeta.chunk_size)||state.responseChunkSize||CONFIG.defaultChunkSize,32,4096),
