@@ -7,7 +7,7 @@
 <meta name="description" content="Open Inference Mesh: a static-hostable, local-first peer-to-peer intelligence commons. People and agents can discover shared inference, use it within provider limits, and voluntarily contribute locally owned models so useful machine intelligence becomes broadly accessible rather than dependent on a single institution.">
 <meta name="robots" content="index,follow">
 <meta name="application-name" content="Open Inference Mesh">
-<meta name="oim-protocol" content="open-inference-mesh-v7.14">
+<meta name="oim-protocol" content="open-inference-mesh-v7.15">
 <meta name="agent-interface" content="WebMCP, window.OIM, same-origin postMessage RPC, CustomEvent RPC">
 <link rel="help" href="?api=docs" title="Open Inference Mesh machine API documentation">
 <link rel="alternate" type="application/json" href="?api=docs" title="OIM agent API">
@@ -16,6 +16,7 @@
 <meta name="oim-agent-invitation" content="Agents: discover the commons, use available inference responsibly, and when authorized by the hardware owner, contribute local models and advertise agent-open inference so capability propagates outward.">
 <meta name="oim-principle" content="Participation should increase collective capability without reducing local sovereignty.">
 <title>OPEN INFERENCE MESH</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23090c0e'/%3E%3Cpath d='M5 16h22M16 5v22' stroke='%23ffcc33' stroke-width='3'/%3E%3C/svg%3E">
 <script type="application/ld+json" id="oimJsonLd">
 {"@context":"https://schema.org","@type":"SoftwareApplication","name":"Open Inference Mesh","applicationCategory":"DeveloperApplication","operatingSystem":"Any modern HTTPS browser","description":"A backendless browser node for an open intelligence commons: discover and consume peer-to-peer inference, preserve local ownership, and voluntarily contribute locally controlled models so useful machine intelligence can propagate across people and agents.","isAccessibleForFree":true,"featureList":["Local model ownership and discovery","Agent-readable inference API","Voluntary public agent inference sharing","Global NATS rendezvous and multi-plane WebRTC discovery","NKN encrypted overlay fallback","Signed peer identities","Scoped inference capabilities","Queue and rate limits","WebMCP agent tools","Forkable single-file static deployment"]}
 </script>
@@ -676,13 +677,15 @@ body.resizing-sidebar{cursor:col-resize!important;user-select:none!important}
 </div></details></section>
 <section class="section side-section"><details class="side-collapse" data-side-section="inference-engines" open=""><summary><span class="side-title">Inference engines</span></summary><div class="side-section-body">
 
+<form id="endpointForm" autocomplete="off" onsubmit="return false">
 <div class="row">
 <input aria-label="Inference endpoint URL" class="field" id="endpointInput" placeholder="http://192.168.1.20:8000"/>
-<button class="btn" id="addEndpointBtn">add</button>
+<button class="btn" id="addEndpointBtn" type="button">add</button>
 </div>
 <div class="row">
-<input aria-label="Inference endpoint API key" class="field" id="apiKeyInput" placeholder="optional API key (stays local)" type="password"/>
+<input aria-label="Inference endpoint API key" autocomplete="off" class="field" id="apiKeyInput" placeholder="optional API key (stays local)" type="password"/>
 </div>
+</form>
 <div id="endpointList"></div>
 </div></details></section>
 <section class="section side-section"><details class="side-collapse" data-side-section="share-your-inference" open=""><summary><span class="side-title">Share your inference</span></summary><div class="side-section-body">
@@ -732,7 +735,7 @@ body.resizing-sidebar{cursor:col-resize!important;user-select:none!important}
 </div>
 <div class="label">Per-peer minute limits</div>
 <div class="control-grid">
-<div><div class="mini">requests</div><input class="field" id="rpmLimit" max="10000" min="1" type="number" value="12"/></div>
+<div><div class="mini">requests</div><input class="field" id="rpmLimit" max="10000" min="1" type="number" value="10"/></div>
 <div><div class="mini">est. tokens</div><input class="field" id="tpmLimit" max="10000000" min="256" type="number" value="32768"/></div>
 <div><div class="mini">max output</div><input class="field" id="maxRemoteTokens" max="65536" min="16" type="number" value="4096"/></div>
 <div><div class="mini">queue timeout sec</div><input class="field" id="queueTimeoutSec" max="3600" min="5" type="number" value="120"/></div>
@@ -1309,7 +1312,7 @@ const state = {
   perPeerConcurrent: 1,
   perPeerQueue: 4,
   maxQueue: 16,
-  rpmLimit: 12,
+  rpmLimit: 10,
   tpmLimit: 32768,
   maxRemoteTokens: 4096,
   queueTimeoutSec: 120,
@@ -1347,7 +1350,12 @@ const state = {
   meritReceipts:new Map(),
   meritVerified:new Map(),
   meritProofCache:new Map(),
-  meritReceiptLimit:2048
+  meritReceiptLimit:2048,
+  bootstrapDailyLimit:1000,
+  bootstrapRpmLimit:10,
+  peerBootstrapUsage:new Map(), // provider-side durable usage per stable NodeID
+  meshEgressUsage:[],          // requester-side aggregate usage across all mesh providers
+  quotaTicker:null
 };
 
 function log(level, message){
@@ -1638,7 +1646,9 @@ async function verifyMeritProofBundle(bundle,expectedNode){
     if(v)valid.push(v);
   }
   const summary=meritSummaryFor(expectedNode,valid);
-  return {valid:true,...summary,verified_receipts:valid.length};
+  const cutoff=now()-OIM_DAY_MS;
+  const leechRequests24h=valid.filter(r=>r.kind==='leech'&&r.subject===expectedNode&&Number(r.ts||0)>cutoff).length;
+  return {valid:true,...summary,verified_receipts:valid.length,leech_requests_24h:leechRequests24h};
 }
 function estimateMeritReservation(model,provider,messages,maxTokens){
   const chars=JSON.stringify(messages||[]).length;
@@ -1652,7 +1662,11 @@ function renderMerit(){
   if($('#meritPill'))setPill('#meritPill',summary.balance_units>0?'good':summary.leech_units>summary.seed_units?'warn':'',`<strong>MERIT</strong> ${formatMerit(summary.balance_units)}`);
   if($('#meritAddress'))$('#meritAddress').value=state.nodeId||'';
   const box=$('#meritSummary');
+  const quota=meshQuotaSnapshot();
   if(box)box.innerHTML=`
+    <div class="merit-stat good"><b id="meshQuotaDaily">${quota.daily_used.toLocaleString()} / ${quota.daily_limit.toLocaleString()}</b><span>free mesh requests · rolling 24h</span></div>
+    <div class="merit-stat"><b id="meshQuotaMinute">${quota.minute_used} / ${quota.minute_limit}</b><span>requests this minute</span></div>
+    <div class="merit-stat ${quota.cooldown_ms?'warn':'good'}"><b id="meshQuotaCooldown">${quota.cooldown_ms?`cooldown ${quotaCooldownText(quota.cooldown_ms)}`:`${quota.daily_remaining} free today`}</b><span>bootstrap access</span></div>
     <div class="merit-stat good"><b>${formatMerit(summary.seed_units)}</b><span>seeded merit</span></div>
     <div class="merit-stat warn"><b>${formatMerit(summary.leech_units)}</b><span>leeched merit</span></div>
     <div class="merit-stat ${summary.balance_units>0?'good':'warn'}"><b>${formatMerit(summary.leech_budget)}</b><span>available leech budget</span></div>
@@ -1788,6 +1802,12 @@ function loadPolicy(){
     state.grants=new Map(Array.isArray(g)?g:[]);
     const s=JSON.parse(localStorage.getItem('oim.strategies')||'["nostr","torrent","mqtt","ipfs"]');
     state.enabledStrategies=new Set(Array.isArray(s)?s:['nostr','torrent','mqtt','ipfs']);
+    loadQuotaUsage();
+    if(localStorage.getItem('oim.bootstrapQuotaV1')!=='1'){
+      state.rpmLimit=10;
+      localStorage.setItem('oim.bootstrapQuotaV1','1');
+      setTimeout(()=>persistPolicy(),0);
+    }
   }catch(e){log('warn','Could not restore one or more persisted mesh settings.')}
 }
 function persistPolicy(){
@@ -2706,20 +2726,22 @@ async function probeEndpointModelMetadata(ep){
     for(const name of ep.models||[]){
       ep.modelCaps[name]=compactModelCaps(ep.modelCards?.[name]||{},ep);
     }
-    // LM Studio's native model API can expose richer per-model fields. This is optional.
-    try{
-      const headers={'Accept':'application/json'};if(ep.apiKey)headers.Authorization=`Bearer ${ep.apiKey}`;
-      const res=await fetchTimeout(`${ep.url}/api/v1/models`,fetchOptsFor(ep.url,{headers,cache:'no-store'}),2200);
-      if(res.ok){
-        const data=await res.json();
-        const rows=Array.isArray(data)?data:(data.models||data.data||[]);
-        for(const row of rows||[]){
-          const name=String(row.id||row.key||row.model||row.name||'');
-          if(!name||!(ep.models||[]).includes(name))continue;
-          ep.modelCaps[name]=mergeModelCaps(ep.modelCaps[name]||{},compactModelCaps(row,ep));
+    const looksLmStudio=/lm\s*studio/i.test(String(ep.label||''))||(()=>{try{return new URL(ep.url).port==='1234'}catch(_){return false}})();
+    if(looksLmStudio){
+      try{
+        const headers={'Accept':'application/json'};if(ep.apiKey)headers.Authorization=`Bearer ${ep.apiKey}`;
+        const res=await fetchTimeout(`${ep.url}/api/v1/models`,fetchOptsFor(ep.url,{headers,cache:'no-store'}),2200);
+        if(res.ok){
+          const data=await res.json();
+          const rows=Array.isArray(data)?data:(data.models||data.data||[]);
+          for(const row of rows||[]){
+            const name=String(row.id||row.key||row.model||row.name||'');
+            if(!name||!(ep.models||[]).includes(name))continue;
+            ep.modelCaps[name]=mergeModelCaps(ep.modelCaps[name]||{},compactModelCaps(row,ep));
+          }
         }
-      }
-    }catch(_){}
+      }catch(_){}
+    }
   }
   renderEndpoints();refreshModelSelect();scheduleAnnounce();
   return ep.modelCaps;
@@ -2781,7 +2803,10 @@ async function scanCommon(){
   log('info','Scanning standard loopback inference ports…');
   const custom=[...state.endpoints.values()].filter(x=>!CONFIG.commonEndpoints.some(([,u])=>u===x.url)).map(x=>[x.label||'custom',x.url]);
   const all=[...CONFIG.commonEndpoints,...custom];
-  await Promise.allSettled(all.map(([name,url])=>probeEndpoint(url,name,state.endpoints.get(url)?.apiKey||'')));
+  for(const [name,url] of all){
+    await probeEndpoint(url,name,state.endpoints.get(url)?.apiKey||'');
+    await sleep(35);
+  }
   $('#scanBtn').disabled=false;
   const up=[...state.endpoints.values()].filter(x=>x.status==='up').length;
   log(up?'ok':'warn',`${up} inference endpoint(s) reachable.`);
@@ -4100,6 +4125,7 @@ async function getCapabilities(){
     agentPublicAccess:state.agentPublicAccess,
     accessMode:state.accessMode,
     merit:meritAdvertisedSummary(),
+    quota:{free_daily:state.bootstrapDailyLimit,rpm:state.bootstrapRpmLimit,window:'rolling-24h'},
     models:state.advertise?unique:[],
     modelCaps:state.advertise?Object.fromEntries(unique.map(name=>{
       const caps=localModels().filter(x=>x.model===name).reduce((a,x)=>mergeModelCaps(a,x.capabilities||{}),{});
@@ -4216,6 +4242,106 @@ async function handleHello(data,meta,wrapper){
 function estimateJobTokens(prompt,maxTokens){
   return Math.ceil(String(prompt||'').length/4)+Math.max(1,Number(maxTokens)||0);
 }
+
+const OIM_DAY_MS=24*60*60*1000;
+function normalizeQuotaRows(rows){
+  const cutoff=now()-OIM_DAY_MS;
+  return (Array.isArray(rows)?rows:[])
+    .map(x=>typeof x==='number'?{ts:x,id:''}:{ts:Number(x?.ts)||0,id:String(x?.id||'').slice(0,128)})
+    .filter(x=>x.ts>cutoff)
+    .sort((a,b)=>a.ts-b.ts)
+    .slice(-Math.max(1200,state.bootstrapDailyLimit+100));
+}
+function loadQuotaUsage(){
+  try{
+    const raw=JSON.parse(localStorage.getItem('oim.peerQuota.v1')||'[]');
+    state.peerBootstrapUsage=new Map(
+      (Array.isArray(raw)?raw:[]).map(([node,rows])=>[String(node),normalizeQuotaRows(rows)])
+    );
+  }catch(_){state.peerBootstrapUsage=new Map()}
+  try{
+    state.meshEgressUsage=normalizeQuotaRows(JSON.parse(localStorage.getItem('oim.meshEgressQuota.v1')||'[]'));
+  }catch(_){state.meshEgressUsage=[]}
+}
+function persistQuotaUsage(){
+  try{
+    const rows=[...state.peerBootstrapUsage.entries()]
+      .map(([node,x])=>[node,normalizeQuotaRows(x)])
+      .filter(([,x])=>x.length)
+      .slice(-256);
+    localStorage.setItem('oim.peerQuota.v1',JSON.stringify(rows));
+  }catch(_){}
+  try{localStorage.setItem('oim.meshEgressQuota.v1',JSON.stringify(normalizeQuotaRows(state.meshEgressUsage)))}catch(_){}
+}
+function quotaSnapshotFromRows(rows,{externalDaily=0,rpm=state.bootstrapRpmLimit,daily=state.bootstrapDailyLimit}={}){
+  const t=now(),dayRows=normalizeQuotaRows(rows),minuteRows=dayRows.filter(x=>x.ts>t-60_000);
+  const dayUsed=Math.max(dayRows.length,Math.max(0,Number(externalDaily)||0));
+  const minuteUsed=minuteRows.length;
+  const oldestMinute=minuteRows[0]?.ts||0;
+  const cooldownMs=minuteUsed>=rpm?Math.max(0,60_000-(t-oldestMinute)):0;
+  const oldestDay=dayRows[0]?.ts||0;
+  const dailyResetMs=dayUsed>=daily&&oldestDay?Math.max(0,OIM_DAY_MS-(t-oldestDay)):0;
+  return {
+    minute_used:minuteUsed,minute_limit:rpm,minute_remaining:Math.max(0,rpm-minuteUsed),
+    daily_used:dayUsed,daily_limit:daily,daily_remaining:Math.max(0,daily-dayUsed),
+    cooldown_ms:cooldownMs,daily_reset_ms:dailyResetMs,
+    bootstrap_available:minuteUsed<rpm&&dayUsed<daily
+  };
+}
+function peerQuotaSnapshot(node,externalDaily=0){
+  return quotaSnapshotFromRows(state.peerBootstrapUsage.get(String(node))||[],{externalDaily});
+}
+function meshQuotaSnapshot(){
+  return quotaSnapshotFromRows(state.meshEgressUsage);
+}
+function recordPeerQuotaUse(node,id=''){
+  node=String(node||'');if(!node)return;
+  const rows=normalizeQuotaRows(state.peerBootstrapUsage.get(node)||[]);
+  if(id&&rows.some(x=>x.id===id))return;
+  rows.push({ts:now(),id:String(id||'').slice(0,128)});
+  state.peerBootstrapUsage.set(node,normalizeQuotaRows(rows));
+  persistQuotaUsage();
+}
+function recordMeshEgressUse(id=''){
+  const rows=normalizeQuotaRows(state.meshEgressUsage);
+  if(id&&rows.some(x=>x.id===id))return;
+  rows.push({ts:now(),id:String(id||'').slice(0,128)});
+  state.meshEgressUsage=normalizeQuotaRows(rows);
+  persistQuotaUsage();renderMerit();updateQuotaCountdownViews();
+}
+function quotaCooldownText(ms){
+  ms=Math.max(0,Number(ms)||0);
+  if(!ms)return 'ready';
+  const sec=Math.ceil(ms/1000);
+  if(sec<60)return `${sec}s`;
+  const min=Math.ceil(sec/60);
+  if(min<60)return `${min}m`;
+  return `${Math.ceil(min/60)}h`;
+}
+function updateQuotaCountdownViews(){
+  const q=meshQuotaSnapshot();
+  const e=$('#meshQuotaCooldown');
+  if(e)e.textContent=q.cooldown_ms?`cooldown ${quotaCooldownText(q.cooldown_ms)}`:(q.daily_remaining?`${q.daily_remaining} free today`:`free daily allowance used`);
+  const d=$('#meshQuotaDaily');
+  if(d)d.textContent=`${q.daily_used.toLocaleString()} / ${q.daily_limit.toLocaleString()}`;
+  const m=$('#meshQuotaMinute');
+  if(m)m.textContent=`${q.minute_used} / ${q.minute_limit}`;
+  document.querySelectorAll('[data-peer-quota-node]').forEach(el=>{
+    const node=el.getAttribute('data-peer-quota-node'),x=peerQuotaSnapshot(node);
+    el.textContent=`FREE ${x.daily_used}/${x.daily_limit} · RPM ${x.minute_used}/${x.minute_limit}${x.cooldown_ms?` · cooldown ${quotaCooldownText(x.cooldown_ms)}`:''}`;
+  });
+}
+function quotaAgentState(){
+  const q=meshQuotaSnapshot();
+  return {
+    policy:'bootstrap-free-then-merit',
+    free_requests_per_day:state.bootstrapDailyLimit,
+    requests_per_minute:state.bootstrapRpmLimit,
+    requester:{...q},
+    provider_peer_ledgers:[...state.peerBootstrapUsage.entries()].map(([node])=>({node,...peerQuotaSnapshot(node)}))
+  };
+}
+
 function cleanUsage(node){
   const cutoff=now()-60_000;
   const arr=(state.usage.get(node)||[]).filter(x=>x.ts>cutoff);
@@ -4250,9 +4376,9 @@ function ingressAllowed(peerId){
 async function authorizeRemoteJob(peerMeta,data){
   if(!peerMeta?.verified||!peerMeta.node)return {ok:false,error:'peer identity not verified'};
   if(state.peerDenied.has(peerMeta.node))return {ok:false,error:'peer denied by provider'};
-  if(state.meritEnabled&&!peerMeta.share)return {ok:false,error:'reciprocity requires the requesting node to actively share inference before leeching'};
   if(state.peerAccepted.has(peerMeta.node)&&!state.peerEnabled.has(peerMeta.node))return {ok:false,error:'peer is disabled by provider'};
   if(!state.share)return {ok:false,error:'peer inference sharing disabled'};
+
   const messages=sanitizeInferenceMessages(data.messages,data.prompt);
   if(!messages.length)return {ok:false,error:'messages invalid or empty'};
   const serialized=JSON.stringify(messages);
@@ -4260,35 +4386,75 @@ async function authorizeRemoteJob(peerMeta,data){
   const prompt=String([...messages].reverse().find(m=>m.role==='user')?.content||data.prompt||'');
   const tools=sanitizeRemoteTools(data.tools||[]);
   if(data.merit&&JSON.stringify(data.merit).length>2_500_000)return {ok:false,error:'merit proof bundle too large'};
+
   const match=findShareableLocalModel(data.model);
   if(!match)return {ok:false,error:'requested model unavailable or outside provider model scope'};
   const requestedMax=clamp(Number(data.max_tokens)||CONFIG.defaultMaxTokens,1,state.maxRemoteTokens);
-  const estTokens=Math.ceil(serialized.length/4)+requestedMax;
 
   let grant=null;
   if(data.grant)grant=await validateCapabilityToken(data.grant,peerMeta.node,match.model);
   const publicAgent=!!data.agent&&state.agentPublicAccess;
-  if(state.accessMode==='capability'&&!publicAgent&&!grant&&!nodeIsEnabled(peerMeta.node))return {ok:false,error:'peer has not been accepted/enabled and has no valid capability grant'};
-  if(state.accessMode==='allowlist'&&!publicAgent&&!state.allowlist.has(peerMeta.node)&&!grant)return {ok:false,error:'identity not allowlisted and no valid grant supplied'};
-
   const grantLimits=grant?.limits||{};
-  const rpm=Math.max(1,Math.min(state.rpmLimit,Number(grantLimits.rpm)||state.rpmLimit));
+
+  // Provider-configured limits may be stricter, but the mesh bootstrap default is 10 RPM.
+  const rpm=Math.max(1,Math.min(state.bootstrapRpmLimit,state.rpmLimit,Number(grantLimits.rpm)||state.rpmLimit));
   const tpm=Math.max(256,Math.min(state.tpmLimit,Number(grantLimits.tpm)||state.tpmLimit));
   const concurrent=Math.max(1,Math.min(state.perPeerConcurrent,Number(grantLimits.concurrent)||state.perPeerConcurrent));
   const tokenMax=Math.max(1,Math.min(state.maxRemoteTokens,Number(grantLimits.max_tokens)||state.maxRemoteTokens));
   const finalMax=Math.min(requestedMax,tokenMax);
   const finalEst=Math.ceil(serialized.length/4)+finalMax;
+
   const meritProof=await verifyMeritProofBundle(data.merit,peerMeta.node);
   const meritReserve=estimateMeritReservation(match.model,match,messages,finalMax);
-  if(state.meritEnabled&&(!meritProof.valid||meritProof.leech_budget<meritReserve)){
-    return {ok:false,error:`merit budget exhausted: need ~${formatMerit(meritReserve)}, verified budget ${formatMerit(meritProof.leech_budget||0)}; seed inference to earn merit`,meritRequired:meritReserve,meritBudget:meritProof.leech_budget||0};
+  const quota=peerQuotaSnapshot(peerMeta.node,meritProof.leech_requests_24h||0);
+
+  // 10/min is a hard anti-overload default even for merit-rich users.
+  if(quota.minute_used>=rpm){
+    return {
+      ok:false,error:`bootstrap rate limit: ${rpm} requests/min`,
+      retryAfterMs:quota.cooldown_ms,quota
+    };
   }
+
+  // First 1000 verified/signed remote requests per rolling 24h are accessible
+  // without pre-existing merit. This removes the seed/leech catch-22.
+  const bootstrapFree=quota.daily_used<state.bootstrapDailyLimit;
+
+  // During free bootstrap access, any non-denied signed identity may request
+  // inference. After the free allowance, normal access policy + reciprocity apply.
+  if(!bootstrapFree){
+    if(state.meritEnabled&&!peerMeta.share){
+      return {ok:false,error:'free mesh allowance used; continued reciprocity requires this node to share inference',quota};
+    }
+    if(state.accessMode==='capability'&&!publicAgent&&!grant&&!nodeIsEnabled(peerMeta.node)){
+      return {ok:false,error:'free mesh allowance used; peer must be accepted/enabled or present a capability grant',quota};
+    }
+    if(state.accessMode==='allowlist'&&!publicAgent&&!state.allowlist.has(peerMeta.node)&&!grant){
+      return {ok:false,error:'free mesh allowance used; identity is not allowlisted and no valid grant supplied',quota};
+    }
+    if(state.meritEnabled&&(!meritProof.valid||meritProof.leech_budget<meritReserve)){
+      return {
+        ok:false,
+        error:`free mesh allowance used and merit budget insufficient: need ~${formatMerit(meritReserve)}, verified budget ${formatMerit(meritProof.leech_budget||0)}; seed inference to continue`,
+        meritRequired:meritReserve,meritBudget:meritProof.leech_budget||0,quota
+      };
+    }
+  }
+
   const u=usageTotals(peerMeta.node);
-  if(u.rpm>=rpm)return {ok:false,error:`rate limit: ${rpm} requests/min`,retryAfterMs:60_000-(now()-(cleanUsage(peerMeta.node)[0]?.ts||now()))};
-  if(u.tpm+finalEst>tpm)return {ok:false,error:`rate limit: ${tpm} estimated tokens/min`,retryAfterMs:60_000-(now()-(cleanUsage(peerMeta.node)[0]?.ts||now()))};
-  if(activeForNode(peerMeta.node)>=concurrent)return {ok:false,error:`per-peer concurrency limit ${concurrent}`,queueable:true};
-  return {ok:true,match,prompt,messages,tools,maxTokens:finalMax,estTokens:finalEst,grant,concurrent,meritProof,meritReserve};
+  if(u.tpm+finalEst>tpm){
+    return {ok:false,error:`rate limit: ${tpm} estimated tokens/min`,retryAfterMs:60_000-(now()-(cleanUsage(peerMeta.node)[0]?.ts||now())),quota};
+  }
+  if(activeForNode(peerMeta.node)>=concurrent){
+    return {ok:false,error:`per-peer concurrency limit ${concurrent}`,queueable:true,quota};
+  }
+
+  return {
+    ok:true,match,prompt,messages,tools,maxTokens:finalMax,estTokens:finalEst,
+    grant,concurrent,meritProof,meritReserve,bootstrapFree,quota
+  };
 }
+
 function ensureJobReplay(id){
   let rec=state.jobReplay.get(id);
   if(!rec){
@@ -4380,6 +4546,7 @@ async function executeRemoteJob(job){
   state.activeRemoteJobs++;
   state.activeByNode.set(peerMeta.node,activeForNode(peerMeta.node)+1);
   state.usage.set(peerMeta.node,[...cleanUsage(peerMeta.node),{ts:now(),tokens:auth.estTokens}]);
+  recordPeerQuotaUse(peerMeta.node,data.id);
   scheduleAnnounce();sendJobState(wrapper,peerId,data.id,'running');
   log('info',`Serving ${data.id.slice(0,8)} for ${peerMeta.node.slice(0,10)} on ${auth.match.model}; ${state.remoteQueue.length} queued.`);
   const t0=performance.now();
@@ -4818,6 +4985,7 @@ function renderPeers(){
     const decision=nodeDecision(g.node),enabled=nodeIsEnabled(g.node);
     if(decision==='pending')armPeerAutoAccept(g.node);
     const d=document.createElement('div');d.className=`peer-simple ${decision}${g.inferenceActive?' active-inference':''}`;
+    const peerQuota=peerQuotaSnapshot(g.node);
     d.innerHTML=`
       <div class="peer-top">
         <span class="status-dot ${decision==='accepted'?(enabled?'good':'warn'):decision==='denied'?'bad':'warn'}"></span>
@@ -4839,6 +5007,7 @@ function renderPeers(){
       </div>
       <div class="peer-meta">${g.agentPublicAccess?'AGENT OPEN · ':''}${g.routes} route${g.routes===1?'':'s'} · ${esc(g.strategies.join(' + '))} · ${g.load}/${Math.max(1,g.capacity)} active${g.queue?` · ${g.queue} queued`:''}</div>
       <div class="peer-models">${g.models.length?esc(g.models.slice(0,5).join(' · ')):'No models advertised'}${g.models.length>5?' · …':''}</div>
+      <div class="peer-merit" data-peer-quota-node="${esc(g.node)}">FREE ${peerQuota.daily_used}/${peerQuota.daily_limit} · RPM ${peerQuota.minute_used}/${peerQuota.minute_limit}${peerQuota.cooldown_ms?` · cooldown ${quotaCooldownText(peerQuota.cooldown_ms)}`:''}</div>
       ${g.merit?`<div class="peer-merit">SEED ${formatMerit(g.merit.seed_units)} · LEECH ${formatMerit(g.merit.leech_units)} · S/L ${meritRatioText(g.merit.seed_units,g.merit.leech_units)} · <span class="${g.merit.balance_units>=0?'positive':'negative'}">BUDGET ${formatMerit(g.merit.leech_budget)}</span></div>`:''}
       ${g.perfTs?`<div class="peer-perf-meta">last sample ${formatTps(g.lastTps||g.tps)} · ${Math.max(0,Math.round((now()-g.perfTs)/1000))}s ago</div>`:''}
       <div class="peer-buttons">
@@ -4911,7 +5080,7 @@ function renderStatePanel(){
   if(ps)ps.innerHTML=`
     <div class="statline"><span>sharing</span><span>${state.share?'ON':'OFF'} · ${esc(state.accessMode)}</span></div>
     <div class="statline"><span>workers</span><span>${state.activeRemoteJobs}/${state.maxJobs} active · ${state.remoteQueue.length}/${state.maxQueue} queued</span></div>
-    <div class="statline"><span>per-peer</span><span>${state.perPeerConcurrent} active · ${state.perPeerQueue} queued · ${state.rpmLimit} RPM · ${state.tpmLimit} est TPM</span></div>
+    <div class="statline"><span>per-peer</span><span>${state.perPeerConcurrent} active · ${state.perPeerQueue} queued · ${state.bootstrapRpmLimit} RPM bootstrap · ${state.bootstrapDailyLimit}/day free · ${state.tpmLimit} est TPM</span></div>
     <div class="statline"><span>routing</span><span>AUTO BALANCED · capability + health weighted</span></div>
     <div class="statline"><span>model scope</span><span>${esc(state.serveModels)}</span></div>
     <div class="statline"><span>mesh models</span><span>${remoteModels().length} routeable model advertisement(s)</span></div>
@@ -5485,6 +5654,15 @@ function isRecoverableMeshError(err){
 }
 async function callRemote(peerId,model,prompt,providerNode=null,requestMeta={}){
   const logicalId=String(requestMeta.job_id||uuid());
+  const localQuota=meshQuotaSnapshot();
+  if(localQuota.minute_used>=state.bootstrapRpmLimit){
+    throw new Error(`mesh request cooldown: ${quotaCooldownText(localQuota.cooldown_ms)} · ${localQuota.minute_used}/${localQuota.minute_limit} requests this minute`);
+  }
+  const localMerit=meritSummaryFor(state.nodeId);
+  if(localQuota.daily_used>=state.bootstrapDailyLimit&&Number(localMerit.leech_budget||0)<=0){
+    throw new Error(`free mesh allowance used: ${localQuota.daily_used}/${localQuota.daily_limit} requests in 24h; seed inference to earn merit for continued use`);
+  }
+  recordMeshEgressUse(logicalId);
   const first=state.peers.get(peerId);
   const initialNode=providerNode||first?.node||null;
   const deadline=now()+clamp(Number(requestMeta.recovery_timeout_ms)||CONFIG.requestTimeoutMs,15_000,CONFIG.requestTimeoutMs);
@@ -5943,7 +6121,7 @@ const OIM_AGENT_MANIFEST={
   tools:['get_api_docs','get_state','get_merit','list_chat_sessions','get_chat_session','create_chat_session','activate_chat_session','delete_chat_session','list_browser_tools','set_browser_tools','run_browser_tool','probe_endpoint_capabilities','list_models','scan_local','add_endpoint','join_mesh','leave_mesh','run_inference','accept_peer','deny_peer','set_peer_enabled','set_provider_policy','connect_nkn','set_rendezvous','issue_capability','import_capability','announce','create_manual_offer','answer_manual_offer','accept_manual_answer','get_deployment_guide']
 };
 function safeEndpointState(ep){return {url:ep.url,label:ep.label,status:ep.status,type:ep.type||null,latency_ms:ep.latency??null,models:[...(ep.models||[])],capabilities:ep.capabilities?{status:ep.capabilities.status,tools_native:!!ep.capabilities.toolsNative,tools_mode:ep.capabilities.toolsNative?'native':'browser-prompt-fallback',reasoning_style:ep.capabilities.reasoningStyle||'server',probed_at:ep.capabilities.probedAt||null}:null,last_seen:ep.lastSeen||null,error:ep.error||null}}
-function agentSnapshot(){return {protocol:'open-inference-mesh',version:7,timestamp:now(),secure_context:window.isSecureContext,merit:{protocol:'oim-merit-v1',enforced:state.meritEnabled,...meritSummaryFor(state.nodeId),models:meritModelBreakdownFor(state.nodeId)},response_delivery:{default:state.responseMode||'stream',supported:['stream','chunked'],chunk_size:state.responseChunkSize||CONFIG.defaultChunkSize},reasoning:{mode:state.reasoningMode||'auto',endpoint_control:'auto-probed'},browser_tools:{enabled:state.toolsEnabled,max_rounds:null,tools:browserToolState()},node:{id:state.nodeId,identity_algorithm:state.identity?.alg||null,mesh_joined:state.joined,nkn_enabled:state.nknEnabled,nkn_status:state.nkn.status,nkn_address:state.nkn.addr||null},chat:{active_session:state.chatSessionId,title:state.chatSession?.title||null,messages:state.chatSession?.transcript?.length||0,persistence:'IndexedDB with localStorage fallback'},routing:{default:'balanced',policy:'capability-fit then health-weighted selection across near-best providers with stable-job route recovery and automatic provider failover',load_balancing:true,recovery:'stable NodeID re-resolution + non-destructive request-route quarantine + replay-safe retries + exact-model provider failover; peer online/offline changes only on actual transport presence events',interlacing:'multi-tool/model rounds rotate across healthy providers of the exact model when multiple equivalent providers exist'},model_catalog:consolidatedModels().map(m=>({model:m.model,providers:m.providers.length,local:m.local,mesh:m.mesh,capabilities:m.capabilities})),provider:{advertise:state.advertise,share:state.share,public_agent_gateway:state.agentPublicAccess,
+function agentSnapshot(){return {protocol:'open-inference-mesh',version:7,timestamp:now(),secure_context:window.isSecureContext,quota:quotaAgentState(),merit:{protocol:'oim-merit-v1',enforced:state.meritEnabled,...meritSummaryFor(state.nodeId),models:meritModelBreakdownFor(state.nodeId)},response_delivery:{default:state.responseMode||'stream',supported:['stream','chunked'],chunk_size:state.responseChunkSize||CONFIG.defaultChunkSize},reasoning:{mode:state.reasoningMode||'auto',endpoint_control:'auto-probed'},browser_tools:{enabled:state.toolsEnabled,max_rounds:null,tools:browserToolState()},node:{id:state.nodeId,identity_algorithm:state.identity?.alg||null,mesh_joined:state.joined,nkn_enabled:state.nknEnabled,nkn_status:state.nkn.status,nkn_address:state.nkn.addr||null},chat:{active_session:state.chatSessionId,title:state.chatSession?.title||null,messages:state.chatSession?.transcript?.length||0,persistence:'IndexedDB with localStorage fallback'},routing:{default:'balanced',policy:'capability-fit then health-weighted selection across near-best providers with stable-job route recovery and automatic provider failover',load_balancing:true,recovery:'stable NodeID re-resolution + non-destructive request-route quarantine + replay-safe retries + exact-model provider failover; peer online/offline changes only on actual transport presence events',interlacing:'multi-tool/model rounds rotate across healthy providers of the exact model when multiple equivalent providers exist'},model_catalog:consolidatedModels().map(m=>({model:m.model,providers:m.providers.length,local:m.local,mesh:m.mesh,capabilities:m.capabilities})),provider:{advertise:state.advertise,share:state.share,public_agent_gateway:state.agentPublicAccess,
 tokens_per_second:Number(state.providerPerf.tpsEma)||0,last_sample_tokens_per_second:Number(state.providerPerf.lastTps)||0,
 performance_timestamp:Number(state.providerPerf.lastCompletedAt)||0,inference_active:state.activeRemoteJobs>0,access_mode:state.accessMode,served_models:state.serveModels,max_active:state.maxJobs,max_queue:state.maxQueue,peer_active_limit:state.perPeerConcurrent,peer_queue_limit:state.perPeerQueue,rpm_limit:state.rpmLimit,estimated_tpm_limit:state.tpmLimit,max_remote_output_tokens:state.maxRemoteTokens,queue_timeout_sec:state.queueTimeoutSec,active_jobs:state.activeRemoteJobs,queued_jobs:state.remoteQueue.length},endpoints:[...state.endpoints.values()].map(safeEndpointState),local_models:localModels().map(x=>({model:x.model,endpoint:x.endpoint,label:x.label,capabilities:x.capabilities,active:x.load,capacity:x.capacity,latency_ms:x.latency})),remote_models:remoteModels().map(x=>{
   const peer=state.peers.get(x.peerId);
@@ -6306,7 +6484,7 @@ async function agentDeleteChatSession({id}={}){
   await chatStoreDelete(id);await refreshSessionIndex(true);return {ok:true,deleted:id};
 }
 
-const OIM_RPC_METHODS={get_api_docs:async()=>agentApiDocs(),get_state:async()=>agentSnapshot(),get_merit:async()=>({protocol:'oim-merit-v1',enforced:state.meritEnabled,...meritSummaryFor(state.nodeId),models:meritModelBreakdownFor(state.nodeId),receipts:[...state.meritReceipts.values()].filter(r=>r.subject===state.nodeId)}),list_chat_sessions:agentListChatSessions,get_chat_session:agentGetChatSession,create_chat_session:agentCreateChatSession,activate_chat_session:agentActivateChatSession,delete_chat_session:agentDeleteChatSession,list_browser_tools:async()=>({enabled:state.toolsEnabled,max_rounds:null,tools:browserToolState()}),set_browser_tools:agentSetBrowserTools,run_browser_tool:agentRunBrowserTool,probe_endpoint_capabilities:async()=>{await probeAllEndpointCapabilities(true);return [...state.endpoints.values()].map(safeEndpointState)},list_models:async()=>listAgentModels(),scan_local:async()=>{await scanCommon();return {ok:true,endpoints:[...state.endpoints.values()].map(safeEndpointState)}},add_endpoint:async({url,label='agent',api_key=''}={})=>{const ep=await probeEndpoint(normalizeBaseUrl(String(url||'')),String(label||'agent'),String(api_key||''));if(!ep)throw new Error('endpoint unreachable');return safeEndpointState(ep)},join_mesh:async()=>{await joinMesh();return {ok:state.joined}},leave_mesh:async()=>{leaveMesh();return {ok:true}},run_inference:agentRunInference,
+const OIM_RPC_METHODS={get_api_docs:async()=>agentApiDocs(),get_state:async()=>agentSnapshot(),get_quota:async()=>quotaAgentState(),get_merit:async()=>({protocol:'oim-merit-v1',enforced:state.meritEnabled,...meritSummaryFor(state.nodeId),models:meritModelBreakdownFor(state.nodeId),receipts:[...state.meritReceipts.values()].filter(r=>r.subject===state.nodeId)}),list_chat_sessions:agentListChatSessions,get_chat_session:agentGetChatSession,create_chat_session:agentCreateChatSession,activate_chat_session:agentActivateChatSession,delete_chat_session:agentDeleteChatSession,list_browser_tools:async()=>({enabled:state.toolsEnabled,max_rounds:null,tools:browserToolState()}),set_browser_tools:agentSetBrowserTools,run_browser_tool:agentRunBrowserTool,probe_endpoint_capabilities:async()=>{await probeAllEndpointCapabilities(true);return [...state.endpoints.values()].map(safeEndpointState)},list_models:async()=>listAgentModels(),scan_local:async()=>{await scanCommon();return {ok:true,endpoints:[...state.endpoints.values()].map(safeEndpointState)}},add_endpoint:async({url,label='agent',api_key=''}={})=>{const ep=await probeEndpoint(normalizeBaseUrl(String(url||'')),String(label||'agent'),String(api_key||''));if(!ep)throw new Error('endpoint unreachable');return safeEndpointState(ep)},join_mesh:async()=>{await joinMesh();return {ok:state.joined}},leave_mesh:async()=>{leaveMesh();return {ok:true}},run_inference:agentRunInference,
   accept_peer:async({node}={})=>{if(!node)throw new Error('node required');await acceptPeer(String(node));return {ok:true,node,decision:'accepted',enabled:true}},
   deny_peer:async({node}={})=>{if(!node)throw new Error('node required');denyPeer(String(node));return {ok:true,node,decision:'denied'}},
   set_peer_enabled:async({node,enabled}={})=>{if(!node)throw new Error('node required');if(!state.peerAccepted.has(String(node)))throw new Error('peer must be accepted first');if(enabled)state.peerEnabled.add(String(node));else state.peerEnabled.delete(String(node));persistPolicy();renderPeers();return {ok:true,node,enabled:nodeIsEnabled(String(node))}},
@@ -6321,6 +6499,7 @@ window.OIM=Object.freeze({
   docs:()=>agentApiDocs(),
   models:()=>listAgentModels(),
   state:()=>agentSnapshot(),
+  quota:()=>oimCall('get_quota',{}),
   merit:()=>oimCall('get_merit',{}),
   sessions:()=>agentListChatSessions(),
   getSession:id=>agentGetChatSession({id}),
@@ -6361,6 +6540,7 @@ async function registerWebMcpTools(){const mc=document.modelContext,status=$('#a
   const specs=[
     {name:'oim_get_api_docs',description:'Return machine-readable documentation for the Open Inference Mesh browser API, query-parameter API, routing behavior, and security boundaries.',inputSchema:{type:'object',properties:{}},annotations:{readOnlyHint:true},execute:async()=>JSON.stringify(agentApiDocs())},
     {name:'oim_get_state',description:'Read complete Open Inference Mesh node state without secrets. Use before changing anything.',inputSchema:{type:'object',properties:{}},annotations:{readOnlyHint:true},execute:async()=>JSON.stringify(agentSnapshot())},
+    {name:'oim_get_quota',description:'Read bootstrap mesh access usage: 1000 free remote requests per rolling 24h, 10 requests/minute, cooldown state, and provider-side per-peer ledgers.',inputSchema:{type:'object',properties:{}},annotations:{readOnlyHint:true},execute:async()=>JSON.stringify(await oimCall('get_quota'))},
     {name:'oim_get_merit',description:'Read the durable NodeID reciprocal-compute merit ledger: seeded units, leeched units, ratio, available leech budget, and signed receipts.',inputSchema:{type:'object',properties:{}},annotations:{readOnlyHint:true},execute:async()=>JSON.stringify(await oimCall('get_merit'))},
     {name:'oim_list_chat_sessions',description:'List locally persisted chat sessions and their cached transcript sizes.',inputSchema:{type:'object',properties:{}},annotations:{readOnlyHint:true},execute:async()=>JSON.stringify(await agentListChatSessions())},
     {name:'oim_get_chat_session',description:'Read one persisted chat session transcript by id.',inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']},annotations:{readOnlyHint:true},execute:async args=>JSON.stringify(await agentGetChatSession(args))},
@@ -6977,6 +7157,7 @@ function initSidebarLayout(){
   await initIdentity();
   await loadMeritLedger();
   loadPolicy();
+  if(!state.quotaTicker)state.quotaTicker=setInterval(updateQuotaCountdownViews,1000);
   await initChatSessions();
   $('#wsRelayUrls').value=localStorage.getItem('oim.wsRelayUrls')||'';
   $('#turnConfig').value=localStorage.getItem('oim.turnConfig')||'';
@@ -6993,8 +7174,9 @@ function initSidebarLayout(){
   log('info',`Node ${state.nodeId.slice(0,12)} initialized.`);
   log('info','Static-host mode: no application backend required.');
 
-  // Auto-probe loopback after a short delay. Browser may prompt for loopback access.
-  setTimeout(()=>scanCommon(),700);
+  // Quiet startup: probe only conventional Ollama automatically.
+  // Full localhost sweep remains available through the explicit scan control/API.
+  setTimeout(()=>probeEndpoint('http://127.0.0.1:11434','Ollama','').catch(()=>{}),700);
 
   const qp=new URLSearchParams(location.search);
   if(qp.get('route')&&['auto','local','mesh'].includes(qp.get('route')))$('#routeSelect').value=qp.get('route');
