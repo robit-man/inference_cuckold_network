@@ -7,7 +7,7 @@
 <meta name="description" content="Open Inference Mesh: a static-hostable, local-first peer-to-peer intelligence commons. People and agents can discover shared inference, use it within provider limits, and voluntarily contribute locally owned models so useful machine intelligence becomes broadly accessible rather than dependent on a single institution.">
 <meta name="robots" content="index,follow">
 <meta name="application-name" content="Open Inference Mesh">
-<meta name="oim-protocol" content="open-inference-mesh-v7.25">
+<meta name="oim-protocol" content="open-inference-mesh-v7.26">
 <meta name="agent-interface" content="WebMCP, window.OIM, same-origin postMessage RPC, CustomEvent RPC">
 <link rel="help" href="?api=docs" title="Open Inference Mesh machine API documentation">
 <link rel="alternate" type="application/json" href="?api=docs" title="OIM agent API">
@@ -2829,11 +2829,18 @@ async function fetchTimeout(url, opts={}, timeout=4500){
   try{
     return await fetch(url,{...fetchOpts,signal:ctrl.signal});
   }catch(e){
+    // First classify our OWN timeout. A timed-out localhost request is not an
+    // LNA permission failure and must never be retried as one.
+    if(timedOut){
+      const err=new Error(`fetch response-header timeout after ${timeout}ms`);
+      err.code='OIM_FETCH_TIMEOUT';
+      err.cause=e;
+      throw err;
+    }
+
     const space=addressSpaceFor(url);
     if(space&&!__oimLanRetried&&window.isSecureContext){
-      // "Failed to fetch" on a public HTTPS page talking to localhost/private
-      // space is frequently an LNA permission transition. Trigger permission
-      // and retry the actual request once.
+      // Only a genuine network/security fetch failure gets one LNA retry.
       await requestLanPermission({automatic:true}).catch(()=>{});
       await sleep(120);
       return fetchTimeout(url,{...fetchOpts,__oimLanRetried:true},timeout);
@@ -2843,12 +2850,6 @@ async function fetchTimeout(url, opts={}, timeout=4500){
       const permission=space==='loopback'?states.loopback:states.local;
       const err=new Error(`local inference fetch failed (${space} permission ${permission}): ${String(e?.message||e)}`);
       err.cause=e;err.code='OIM_LOCAL_FETCH_FAILED';err.addressSpace=space;err.permission=permission;
-      throw err;
-    }
-    if(timedOut){
-      const err=new Error(`fetch response-header timeout after ${timeout}ms`);
-      err.code='OIM_FETCH_TIMEOUT';
-      err.cause=e;
       throw err;
     }
     throw e;
@@ -2995,6 +2996,30 @@ async function probeEndpoint(url, label='manual', apiKey=''){
       models=(data.data||[]).map(x=>String(x.id||x.model||'')).filter(Boolean);
       for(const card of data.data||[]){const id=String(card.id||card.model||'');if(id)modelCards[id]=card}
       detail=`/v1/models ${res.status}`;
+
+      // Ollama also implements OpenAI /v1/models, so a successful OpenAI probe
+      // does NOT mean this is a generic OpenAI backend. Confirm native Ollama
+      // on the conventional endpoint/label and prefer its native streaming API.
+      if(/ollama/i.test(String(label||''))||/:11434$/i.test(url)){
+        try{
+          const nativeRes=await fetchTimeout(
+            `${url}/api/tags`,
+            fetchOptsFor(url,{headers:{'Accept':'application/json'},cache:'no-store'}),
+            3000
+          );
+          if(nativeRes.ok){
+            const nativeData=await nativeRes.json();
+            const nativeModels=(nativeData.models||[])
+              .map(x=>String(x.name||x.model||'')).filter(Boolean);
+            if(nativeModels.length)models=nativeModels;
+            for(const card of nativeData.models||[]){
+              const id=String(card.name||card.model||'');if(id)modelCards[id]=card;
+            }
+            type='ollama';
+            detail=`/api/tags ${nativeRes.status} · native`;
+          }
+        }catch(_){}
+      }
     }else throw new Error(`HTTP ${res.status}`);
   }catch(firstErr){
     // Ollama native fallback.
@@ -4832,6 +4857,18 @@ async function flushStreamFrameKey(key){
   state.streamDiag.txChars+=rec.delta.length;
   state.streamDiag.lastTxAt=now();
 
+  // STATE is already proven bidirectional by RECEIVED/RUNNING/BACKEND-START.
+  // Mirror content over that same action path first, then retain oim-delta as a
+  // redundant compatibility path. Requester deduplicates by stream sequence.
+  const statePacket={
+    id:rec.id,status:'content',delta:rec.delta,seq:rec.seq,
+    mode:rec.mode||'stream',ts:now(),node:state.nodeId,
+    active:state.activeRemoteJobs,capacity:state.maxJobs,
+    queued:state.remoteQueue.length,maxQueue:state.maxQueue
+  };
+  try{
+    await rec.wrapper.actions.state.send(statePacket,{target:rec.peerId});
+  }catch(_){}
   try{
     await rec.wrapper.actions.delta.send(packet,{target:rec.peerId});
   }catch(_){}
@@ -5021,10 +5058,12 @@ async function executeRemoteJob(job){
     const chunkSize=clamp(Number(data.chunk_size)||CONFIG.defaultChunkSize,32,4096);
     let seq=0,reasoningProgressAt=0;
     let completion,firstContentAt=0;
+    const backendEp=state.endpoints.get(auth.match.endpoint);
     sendJobState(wrapper,peerId,data.id,'backend-start',{
       model:auth.match.model,
       endpoint_label:auth.match.label||'local',
-      endpoint:auth.match.endpoint||null
+      endpoint:auth.match.endpoint||null,
+      backend_type:backendEp?.type||auth.match.type||'openai'
     });
     try{
       completion=await callLocalProvider(auth.match,auth.messages,{
@@ -5209,6 +5248,11 @@ function handleRemoteState(data,meta,wrapper){
   if(!data?.id)return;
   const p=state.pending.get(data.id);
   if(p&&!pendingSourceAllowed(p,meta,wrapper))return;
+  if(p&&data.status==='content'){
+    consumePendingStreamDelta(p,data,meta,wrapper,'state');
+    renderPeers();renderStatePanel();
+    return;
+  }
   if(p){
     p.state=data;
     p.lastStateAt=now();
@@ -5223,7 +5267,7 @@ function handleRemoteState(data,meta,wrapper){
     if(data.status==='backend-start'){
       if(p.lastLoggedPhase!=='backend-start'){
         p.lastLoggedPhase='backend-start';
-        log('info',`Remote job ${data.id.slice(0,8)} entered local backend · ${data.model||'model'}${data.endpoint?' · '+data.endpoint:''}.`);
+        log('info',`Remote job ${data.id.slice(0,8)} entered local backend · ${data.model||'model'}${data.backend_type?' · '+String(data.backend_type).toUpperCase():''}${data.endpoint?' · '+data.endpoint:''}.`);
       }
     }
     if(data.status==='streaming'){
@@ -5327,32 +5371,60 @@ function requestPendingResultReplay(pending,reason='stalled'){
   return true;
 }
 
-function handleInferenceDelta(data,meta,wrapper){
-  if(!data?.id||typeof data.delta!=='string')return;
-  const pending=state.pending.get(data.id);
-  if(!pending)return;
-  if(!pendingSourceAllowed(pending,meta,wrapper)){
-    discoveryWarnLimited(
-      `delta-source:${data.id}:${meta.peerId}`,
-      `Ignored inference delta ${data.id.slice(0,8)} from unrelated route ${String(meta.peerId).slice(0,16)}.`,
-      15000
-    );
-    return;
+
+function consumePendingStreamDelta(pending,data,meta,wrapper,channel='delta'){
+  if(!pending||typeof data?.delta!=='string')return false;
+  if(!pendingSourceAllowed(pending,meta,wrapper))return false;
+
+  const seq=Number(data.seq);
+  if(Number.isFinite(seq)){
+    if(!pending.seenStreamSeq)pending.seenStreamSeq=new Set();
+    if(pending.seenStreamSeq.has(seq))return false;
+    pending.seenStreamSeq.add(seq);
+    if(pending.seenStreamSeq.size>4096){
+      const keep=[...pending.seenStreamSeq].slice(-2048);
+      pending.seenStreamSeq=new Set(keep);
+    }
   }
+
   pending.streamText=(pending.streamText||'')+data.delta;
   pending.lastDeltaAt=now();
   state.streamDiag.rxDeltas++;
   state.streamDiag.rxChars+=data.delta.length;
   state.streamDiag.lastRxAt=now();
+
   if(typeof pending.onDelta==='function'){
-    try{pending.onDelta(data.delta,pending.streamText,{mode:data.mode||'stream',seq:Number(data.seq)||0,peerId:meta.peerId})}catch(_){}
+    try{
+      pending.onDelta(
+        data.delta,pending.streamText,
+        {mode:data.mode||'stream',seq:Number.isFinite(seq)?seq:0,peerId:meta.peerId,channel}
+      );
+    }catch(_){}
   }
+
   const peer=state.peers.get(meta.peerId);
   if(peer){
     peer.inferenceActive=true;peer.lastActivityAt=now();
     peer.suspectUntil=0;peer.routeFailures=0;peer.lastError='';
   }
+  return true;
 }
+
+function handleInferenceDelta(data,meta,wrapper){
+  if(!data?.id||typeof data.delta!=='string')return;
+  const pending=state.pending.get(data.id);
+  if(!pending)return;
+  if(!consumePendingStreamDelta(pending,data,meta,wrapper,'delta')){
+    if(!pendingSourceAllowed(pending,meta,wrapper)){
+      discoveryWarnLimited(
+        `delta-source:${data.id}:${meta.peerId}`,
+        `Ignored inference delta ${data.id.slice(0,8)} from unrelated route ${String(meta.peerId).slice(0,16)}.`,
+        15000
+      );
+    }
+  }
+}
+
 function handleInferenceResult(data,meta,wrapper){
   if(!data?.id)return;
   const pending=state.pending.get(data.id);
@@ -5950,7 +6022,9 @@ async function callLocalProvider(provider,messages,extra={}){
   state.localActiveJobs++;
   updateStats();renderModelCatalog();
   try{
-    return await callOpenAI(provider.endpoint,provider.model,messages,extra);
+    return ep.type==='ollama'
+      ?await callOllamaNative(provider.endpoint,provider.model,messages,extra)
+      :await callOpenAI(provider.endpoint,provider.model,messages,extra);
   }finally{
     ep.activeJobs=Math.max(0,(Number(ep.activeJobs)||1)-1);
     state.localActiveJobs=Math.max(0,state.localActiveJobs-1);
@@ -6133,6 +6207,175 @@ async function readerReadWithTimeout(reader,timeoutMs,label='stream read'){
       })
     ]);
   }finally{clearTimeout(timer)}
+}
+
+
+async function callOllamaNative(endpointUrl,model,messages,extra={}){
+  const ep=state.endpoints.get(endpointUrl);
+  if(!ep||ep.status!=='up')throw new Error('endpoint is not online');
+
+  const responseMode=extra.response_mode==='chunked'?'chunked':'stream';
+  const chunkSize=clamp(Number(extra.chunk_size)||state.responseChunkSize||CONFIG.defaultChunkSize,32,4096);
+  const requestedTools=sanitizeRemoteTools(extra.tools||[]);
+  const reasoningMode=reasoningModeForRequest(extra.reasoning_mode??state.reasoningMode);
+  const modelCaps=ep.modelCaps?.[model]||{};
+  const nativeTools=requestedTools.length>0&&!!(modelCaps.tools||modelCaps.tools_reported);
+
+  const requestMessages=requestedTools.length&&!nativeTools
+    ?prepareFallbackToolMessages(messages,requestedTools)
+    :sanitizeInferenceMessages(messages,'');
+
+  const payload={
+    model,
+    messages:requestMessages,
+    stream:true,
+    options:{
+      temperature:extra.temperature??0.7,
+      num_predict:extra.max_tokens??CONFIG.defaultMaxTokens
+    }
+  };
+  if(requestedTools.length&&nativeTools)payload.tools=requestedTools;
+  if(reasoningMode==='on')payload.think=true;
+  else if(reasoningMode==='off')payload.think=false;
+
+  const headers={'Content-Type':'application/json','Accept':'application/x-ndjson, application/json'};
+  const handshakeMs=clamp(Number(extra.stream_handshake_timeout_ms)||120000,30000,180000);
+  const res=await fetchTimeout(
+    `${endpointUrl}/api/chat`,
+    fetchOptsFor(endpointUrl,{method:'POST',headers,body:JSON.stringify(payload)}),
+    handshakeMs
+  );
+
+  if(!res.ok){
+    let body='';try{body=(await res.text()).slice(0,800)}catch(_){}
+    throw new Error(`ollama chat HTTP ${res.status}${body?': '+body:''}`);
+  }
+
+  if(!res.body)throw new Error('ollama streaming response has no readable body');
+
+  const reader=res.body.getReader();
+  const decoder=new TextDecoder();
+  let buffer='',full='',visibleFull='',reasoning='',chunkBuffer='';
+  let completionTokens=0,promptTokens=0,totalTokens=0;
+  let evalDuration=0,loadDuration=0,totalDuration=0;
+  const toolCalls=[];
+  const fallbackTools=requestedTools.length&&!nativeTools;
+
+  const emitVisible=async delta=>{
+    if(!delta)return;
+    visibleFull+=delta;
+    if(responseMode==='stream'){
+      if(extra.on_delta)await extra.on_delta(delta,visibleFull,{mode:'stream',final:false,kind:'content'});
+    }else{
+      chunkBuffer+=delta;
+      if(chunkBuffer.length>=chunkSize){
+        const out=chunkBuffer;chunkBuffer='';
+        if(extra.on_delta)await extra.on_delta(out,visibleFull,{mode:'chunked',final:false,kind:'content'});
+      }
+    }
+  };
+  const fallbackFilter=fallbackTools?createFallbackStreamFilter(emitVisible):null;
+  const emit=async delta=>{
+    if(!delta)return;
+    full+=delta;
+    if(fallbackFilter)await fallbackFilter.push(delta);
+    else await emitVisible(delta);
+  };
+
+  const consume=async line=>{
+    line=String(line||'').trim();
+    if(!line)return false;
+    let data;
+    try{data=JSON.parse(line)}catch(_){return false}
+    if(data.error)throw new Error(`ollama stream error: ${String(data.error)}`);
+
+    const msg=data.message||{};
+    const thinking=msg.thinking??msg.reasoning??'';
+    if(typeof thinking==='string'&&thinking){
+      reasoning+=thinking;
+      if(extra.on_reasoning_delta){
+        try{await extra.on_reasoning_delta(thinking,reasoning,{mode:'reasoning'})}catch(_){}
+      }
+    }
+
+    const content=msg.content;
+    if(typeof content==='string'&&content)await emit(content);
+
+    if(Array.isArray(msg.tool_calls)&&msg.tool_calls.length){
+      for(const tc of normalizeToolCalls(msg.tool_calls))toolCalls.push(tc);
+    }
+
+    if(data.done){
+      completionTokens=Number(data.eval_count)||completionTokens;
+      promptTokens=Number(data.prompt_eval_count)||promptTokens;
+      totalTokens=completionTokens+promptTokens;
+      evalDuration=Number(data.eval_duration)||0;
+      loadDuration=Number(data.load_duration)||0;
+      totalDuration=Number(data.total_duration)||0;
+      return true;
+    }
+    return false;
+  };
+
+  let done=false,receivedBytes=false;
+  while(!done){
+    let part;
+    try{
+      part=await readerReadWithTimeout(
+        reader,
+        receivedBytes?45000:120000,
+        receivedBytes?'ollama stream idle':'ollama first-byte'
+      );
+    }catch(e){
+      try{await reader.cancel()}catch(_){}
+      throw e;
+    }
+    if(part.done)break;
+    if(part.value?.byteLength)receivedBytes=true;
+    buffer+=decoder.decode(part.value,{stream:true});
+    const lines=buffer.split(/\r?\n/);
+    buffer=lines.pop()||'';
+    for(const line of lines){
+      if(await consume(line)){done=true;break}
+    }
+  }
+  buffer+=decoder.decode();
+  if(buffer.trim())await consume(buffer);
+
+  if(fallbackFilter)await fallbackFilter.finish();
+  if(responseMode==='chunked'&&chunkBuffer){
+    const out=chunkBuffer;chunkBuffer='';
+    if(extra.on_delta)await extra.on_delta(out,visibleFull,{mode:'chunked',final:false,kind:'content'});
+  }
+
+  let normalizedTools=normalizeToolCalls(toolCalls);
+  if(fallbackTools){
+    const parsed=extractFallbackToolCalls(full);
+    normalizedTools=parsed.tool_calls;
+    full=parsed.text;
+    if(!normalizedTools.length&&full&&!visibleFull&&extra.on_delta){
+      await extra.on_delta(full,full,{mode:responseMode,final:true,kind:'content'});
+      visibleFull=full;
+    }
+  }
+
+  if(!full&&!normalizedTools.length)throw new Error('ollama stream completed without text or tool calls');
+
+  const usage={
+    prompt_tokens:promptTokens,
+    completion_tokens:completionTokens,
+    total_tokens:totalTokens
+  };
+  const result={
+    text:full,tool_calls:normalizedTools,usage,
+    reasoning:reasoning||null,
+    completion_tokens:completionTokens,prompt_tokens:promptTokens,total_tokens:totalTokens,
+    tools_mode:requestedTools.length?(nativeTools?'native':'prompt'):'off',
+    reasoning_mode:reasoningMode,reasoning_style:'ollama',
+    ollama_metrics:{eval_duration:evalDuration,load_duration:loadDuration,total_duration:totalDuration}
+  };
+  if(extra.return_meta)return result;
+  return full;
 }
 
 async function callOpenAI(endpointUrl,model,messages,extra={}){
@@ -6390,7 +6633,7 @@ async function callOpenAILegacyCompat(endpointUrl,model,prompt,extra={}){
 }
 function shouldUseLegacyProviderFallback(err){
   const msg=String(err?.message||err||'').toLowerCase();
-  return /failed to fetch|local inference fetch failed|oim_local_fetch_failed|oim_fetch_timeout|fetch response-header timeout|networkerror|network error|streaming response has no readable body|stream completed without text or tool calls|stream first-byte timeout|stream idle timeout/.test(msg);
+  return /failed to fetch|local inference fetch failed|oim_local_fetch_failed|oim_fetch_timeout|fetch response-header timeout|networkerror|network error|streaming response has no readable body|stream completed without text or tool calls|stream first-byte timeout|stream idle timeout|ollama first-byte timeout|ollama stream idle|ollama stream completed without text/.test(msg);
 }
 
 function routeTransportConnected(routeId){
@@ -6596,7 +6839,7 @@ async function callRemote(peerId,model,prompt,providerNode=null,requestMeta={}){
         timer,health,peerId:routeId,providerNode:node,started:now(),attempt,
         state:null,onDelta:requestMeta.on_delta||null,streamText:'',
         lastDeltaAt:0,lastStateAt:0,deliveryAckAt:0,minimalRetrySent:false,
-        lastReplayAt:0,replayCount:0,requestReplay:null
+        lastReplayAt:0,replayCount:0,requestReplay:null,seenStreamSeq:new Set()
       });
       const advancedEnvelope={
         id:logicalId,model,prompt,
